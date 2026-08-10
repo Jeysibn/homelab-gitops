@@ -1,0 +1,12 @@
+ports:
+  web:
+    redirectTo:
+      port: websecure
+  websecure:
+    asDefault: true
+    tls:
+      enabled: true
+
+service:
+  enabled: true
+  type: LoadBalancer # Triggers Calico IPAM to allocate an IP from our IPPool
