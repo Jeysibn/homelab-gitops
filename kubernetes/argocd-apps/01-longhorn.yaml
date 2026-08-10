@@ -7,15 +7,16 @@ metadata:
     argocd.argoproj.io/sync-wave: "1"
 spec:
   project: default
-  source:
-    repoURL: 'https://charts.longhorn.io'
-    chart: longhorn
-    targetRevision: 1.6.2
-    helm:
-      valueFiles:
-        - '$values/kubernetes/apps/longhorn/values.yaml'
-    # Reference the local git repo for valueFiles
-    plugin: {}
+  sources:
+    - repoURL: 'https://charts.longhorn.io'
+      chart: longhorn
+      targetRevision: 1.6.2
+      helm:
+        valueFiles:
+          - '$values/kubernetes/apps/longhorn/values.yaml'
+    - repoURL: 'https://github.com/Jeysibn/homelab-gitops.git'
+      targetRevision: HEAD
+      ref: values
   destination:
     server: 'https://kubernetes.default.svc'
     namespace: longhorn-system
