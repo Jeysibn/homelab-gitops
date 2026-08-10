@@ -15,7 +15,7 @@ spec:
         valueFiles:
           - '$values/kubernetes/apps/longhorn/values.yaml'
     - repoURL: 'https://github.com/Jeysibn/homelab-gitops.git'
-      targetRevision: HEAD
+      targetRevision: main
       ref: values
   destination:
     server: 'https://kubernetes.default.svc'
