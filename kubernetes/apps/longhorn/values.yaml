@@ -10,3 +10,6 @@ persistence:
 
 ingress:
   enabled: false # Traefik will route to Longhorn UI in Phase 3
+
+preUpgradeChecker:
+  jobEnabled: false
