@@ -1,0 +1,19 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: calico-ippool
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  project: default
+  source:
+    repoURL: 'https://github.com/Jeysibn/homelab-gitops.git' # Replace with your GitHub URL
+    targetRevision: HEAD
+    path: kubernetes/apps/calico
+  destination:
+    server: 'https://kubernetes.default.svc'
+    namespace: calico-system
+  syncPolicy:
+    automated: { prune: true, selfHeal: true }
+    syncOptions: [ CreateNamespace=true ]
