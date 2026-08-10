@@ -1,0 +1,13 @@
+apiVersion: projectcalico.org/v3
+kind: IPPool
+metadata:
+  name: loadbalancer-ip-pool
+spec:
+  # Adjust this range to an unused slice on your local home network (e.g. 192.168.1.200/29 provides 8 IPs: .200 - .207)
+  cidr: 172.21.149.200/29
+  blockSize: 32
+  natOutgoing: false
+  disabled: false
+  assignmentMode: Automatic
+  allowedUses:
+  - LoadBalancer

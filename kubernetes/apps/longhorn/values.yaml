@@ -1,0 +1,12 @@
+defaultSettings:
+  defaultDataPath: /var/lib/longhorn
+  # Allows single-node testing while supporting multi-node expansion
+  replicaSoftAntiAffinity: true
+  defaultReplicaCount: 1
+
+persistence:
+  defaultClass: true
+  defaultClassReplicaCount: 1
+
+ingress:
+  enabled: false # Traefik will route to Longhorn UI in Phase 3
