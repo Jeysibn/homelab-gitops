@@ -24,6 +24,6 @@ provider "proxmox" {
   ssh {
     agent       = true
     username    = "root"
-    private_key = file("~/.ssh/id_ed25519") # Replace with id_rsa if using RSA keys
+    private_key = var.proxmox_ssh_private_key # Replace with id_rsa if using RSA keys
   }
 }
