@@ -1,5 +1,12 @@
 terraform {
   required_version = ">= 1.5.0"
+  cloud {
+    organization = "Homelab-gitops" # Replace with your HCP Terraform org name
+
+    workspaces {
+      name = "homelab-gitops"
+    }
+  }
   required_providers {
     proxmox = {
       source  = "bpg/proxmox"
