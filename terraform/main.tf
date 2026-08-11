@@ -9,9 +9,11 @@ resource "proxmox_download_file" "ubuntu_cloud_image" {
 }
 
 resource "proxmox_virtual_environment_vm" "k3s_node" {
-  name      = "k3s-node-01"
-  node_name = var.proxmox_node
-  vm_id     = 100
+  name          = "k3s-node-01"
+  node_name     = var.proxmox_node
+  vm_id         = 100
+  boot_order    = ["scsi0"]
+  scsi_hardware = "virtio-scsi-single"
 
   agent {
     enabled = true
@@ -38,7 +40,12 @@ resource "proxmox_virtual_environment_vm" "k3s_node" {
     bridge = "vmbr0"
   }
 
+  operating_system {
+    type = "l26"
+  }
+
   initialization {
+    datastore_id = "local-lvm"
     ip_config {
       ipv4 {
         address = "dhcp"
