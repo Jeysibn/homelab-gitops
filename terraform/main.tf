@@ -1,10 +1,12 @@
 # Download Ubuntu 22.04 Cloud-Init Image directly to Proxmox 'local' storage
 resource "proxmox_virtual_environment_download_file" "ubuntu_cloud_image" {
-  content_type = "iso"
-  datastore_id = "local"
-  node_name    = var.proxmox_node
-  url          = "https://cloud-images.ubuntu.com/releases/22.04/release/ubuntu-22.04-server-cloudimg-amd64.img"
-  file_name    = "ubuntu-22.04-server-cloudimg-amd64.img"
+  content_type        = "iso"
+  datastore_id        = "local"
+  node_name           = var.proxmox_node
+  url                 = "https://cloud-images.ubuntu.com/releases/22.04/release/ubuntu-22.04-server-cloudimg-amd64.img"
+  file_name           = "ubuntu-22.04-server-cloudimg-amd64.img"
+  overwrite           = true
+  overwrite_unmanaged = true
 }
 
 resource "proxmox_virtual_environment_vm" "k3s_node" {
