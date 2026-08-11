@@ -8,3 +8,4 @@ spec:
   natOutgoing: true
   disabled: false
   nodeSelector: all()
+
