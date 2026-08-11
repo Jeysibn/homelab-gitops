@@ -2,13 +2,18 @@ name: Kubernetes Manifest Validation
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, dev ]
     paths:
       - 'kubernetes/**'
   pull_request:
     branches: [ main ]
     paths:
       - 'kubernetes/**'
+
+permissions:
+  contents: read
+  statuses: write
+  checks: write
 
 jobs:
   validate:
@@ -24,10 +29,12 @@ jobs:
         with:
           file_or_dir: kubernetes/
 
-      - name: Setup Kubeconform
-        uses: github/super-linter/slim@v5
-        env:
-          VALIDATE_ALL_CODEBASE: true
-          VALIDATE_KUBERNETES_KUBECONFORM: true
-          DEFAULT_BRANCH: main
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Run Kubeconform
+        uses: yannh/kubeconform-action@v0.8.0
+        with:
+          k8s-version: '1.30.0'
+          ignore-missing-schemas: true
+          schema-locations: |
+            default
+            https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json
+          files: 'kubernetes/'
