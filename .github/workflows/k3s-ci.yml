@@ -1,5 +1,4 @@
-name: Lint & Validate Kubernetes
-
+name: K3s Manifest & Helm CI
 on:
   workflow_dispatch: # Enables manual "Run workflow" bu
   push:
@@ -16,7 +15,7 @@ permissions:
 
 jobs:
   validate:
-    name: Lint, Render, Validate & Security Scan
+    name: Lint & Validate Kubernetes
     runs-on: ubuntu-latest
 
     steps:
