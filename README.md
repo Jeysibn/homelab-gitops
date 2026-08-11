@@ -33,3 +33,4 @@ The entire cluster can be rebuilt from bare metal in under 15 minutes:
 2. Bootstrap K3s & CNI: `./kubernetes/bootstrap/k3s-install.sh`
 3. Install GitOps Engine: `kubectl apply -n argocd --server-side -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml`
 4. Trigger Automation: `kubectl apply -f kubernetes/root-app-of-apps.yaml`
+
