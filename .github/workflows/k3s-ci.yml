@@ -1,6 +1,7 @@
 name: Kubernetes & Helm Validation
 
 on:
+  workflow_dispatch: # Enables manual "Run workflow" bu
   push:
     branches: [ main, dev ]
     paths:
@@ -41,25 +42,24 @@ jobs:
         run: |
           touch rendered-manifests.yaml
 
-          for file in kubernetes/argocd-apps/*.yaml; do
-            yq eval-all -o=json '.' "$file" | jq -c '.[]? // .' | while read -r doc; do
-              echo "$doc" | jq -c '.spec.sources[]? // .spec.source // empty' | while read -r src; do
-                chart=$(echo "$src" | jq -r '.chart // empty')
-                if [ -n "$chart" ]; then
-                  repo=$(echo "$src" | jq -r '.repoURL')
-                  version=$(echo "$src" | jq -r '.targetRevision')
-                  val_file=$(echo "$src" | jq -r '.helm.valueFiles[0] // empty' | sed 's|\$values/||')
+          yq eval-all '
+            select(.kind == "Application") |
+            (.spec.sources[]?, .spec.source) |
+            select(.chart != null) |
+            [.chart, .repoURL, .targetRevision, (.helm.valueFiles[0] // "none")] |
+            join("\t")
+          ' kubernetes/argocd-apps/*.yaml | while IFS=$'\t' read -r chart repo version val_file; do
+            [ -z "$chart" ] && continue
+            echo "Rendering $chart ($version) from $repo"
 
-                  echo "Rendering $chart ($version) from $repo"
+            # Strip $values/ prefix if present
+            clean_val_file=$(echo "$val_file" | sed 's|\$values/||')
 
-                  if [ -n "$val_file" ] && [ -f "$val_file" ]; then
-                    helm template "$chart" "$chart" --repo "$repo" --version "$version" -f "$val_file" >> rendered-manifests.yaml
-                  else
-                    helm template "$chart" "$chart" --repo "$repo" --version "$version" >> rendered-manifests.yaml
-                  fi
-                fi
-              done
-            done
+            if [ "$clean_val_file" != "none" ] && [ -f "$clean_val_file" ]; then
+              helm template "$chart" "$chart" --repo "$repo" --version "$version" -f "$clean_val_file" >> rendered-manifests.yaml
+            else
+              helm template "$chart" "$chart" --repo "$repo" --version "$version" >> rendered-manifests.yaml
+            fi
           done
 
       - name: 3. Validate Kubernetes Manifests (Kubeconform)
