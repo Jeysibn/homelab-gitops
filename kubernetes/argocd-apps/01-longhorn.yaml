@@ -5,6 +5,8 @@ metadata:
   namespace: argocd
   annotations:
     argocd.argoproj.io/sync-wave: "1"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
 spec:
   project: default
   sources:
@@ -13,13 +15,16 @@ spec:
       targetRevision: 1.6.2
       helm:
         valueFiles:
-          - '$values/kubernetes/apps/longhorn/values.yaml'
-    - repoURL: 'https://github.com/Jeysibn/homelab-gitops.git'
-      targetRevision: main
+          - $values/kubernetes/apps/longhorn/values.yaml
+    - repoURL: 'https://github.com/jeysibn/homelab-gitops.git'
+      targetRevision: HEAD
       ref: values
   destination:
     server: 'https://kubernetes.default.svc'
     namespace: longhorn-system
   syncPolicy:
-    automated: { prune: true, selfHeal: true }
-    syncOptions: [ CreateNamespace=true ]
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

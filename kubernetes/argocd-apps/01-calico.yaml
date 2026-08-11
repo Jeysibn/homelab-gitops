@@ -1,7 +1,7 @@
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: calico-ippool
+  name: calico-operator
   namespace: argocd
   annotations:
     argocd.argoproj.io/sync-wave: "1"
@@ -10,12 +10,12 @@ metadata:
 spec:
   project: default
   source:
-    repoURL: 'https://github.com/jeysibn/homelab-gitops.git'
-    targetRevision: HEAD
-    path: kubernetes/apps/calico
+    repoURL: 'https://docs.tigera.io/calico/charts'
+    chart: tigera-operator
+    targetRevision: v3.27.2
   destination:
     server: 'https://kubernetes.default.svc'
-    namespace: kube-system
+    namespace: tigera-operator
   syncPolicy:
     automated:
       prune: true

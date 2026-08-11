@@ -21,8 +21,11 @@ resource "proxmox_virtual_environment_file" "cloud_config" {
       package_update: true
       packages:
         - qemu-guest-agent
+        - open-iscsi
+        - nfs-common
       runcmd:
         - systemctl enable --now qemu-guest-agent
+        - systemctl enable --now iscsid
     EOF
 
     file_name = "k3s-cloud-config.yaml"

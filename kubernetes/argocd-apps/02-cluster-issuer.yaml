@@ -1,10 +1,10 @@
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: calico-ippool
+  name: cluster-issuer
   namespace: argocd
   annotations:
-    argocd.argoproj.io/sync-wave: "1"
+    argocd.argoproj.io/sync-wave: "2"
   finalizers:
     - resources-finalizer.argocd.argoproj.io
 spec:
@@ -12,13 +12,11 @@ spec:
   source:
     repoURL: 'https://github.com/jeysibn/homelab-gitops.git'
     targetRevision: HEAD
-    path: kubernetes/apps/calico
+    path: kubernetes/apps/cert-manager
   destination:
     server: 'https://kubernetes.default.svc'
-    namespace: kube-system
+    namespace: cert-manager
   syncPolicy:
     automated:
       prune: true
       selfHeal: true
-    syncOptions:
-      - CreateNamespace=true

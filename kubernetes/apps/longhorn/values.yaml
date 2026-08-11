@@ -1,15 +1,18 @@
-defaultSettings:
-  defaultDataPath: /var/lib/longhorn
-  # Allows single-node testing while supporting multi-node expansion
-  replicaSoftAntiAffinity: true
-  defaultReplicaCount: 1
+global:
+  storageClass:
+    defaultClass: true
 
 persistence:
-  defaultClass: true
-  defaultClassReplicaCount: 1
+  defaultClassReplicaCount: 1  # Configured for single-node K3s setup
+
+defaultSettings:
+  defaultDataPath: /var/lib/longhorn
+  replicaAutoBalance: disabled
+  storageMinimalAvailablePercentage: 15
+  createDefaultDiskLabeledNodes: true
 
 ingress:
-  enabled: false # Traefik will route to Longhorn UI in Phase 3
+  enabled: false
 
-preUpgradeChecker:
-  jobEnabled: false
+longhornUI:
+  replicas: 1
