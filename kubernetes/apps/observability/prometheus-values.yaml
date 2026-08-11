@@ -1,0 +1,15 @@
+server:
+  persistentVolume:
+    enabled: true
+    storageClass: "longhorn"
+    size: 10Gi
+  retention: 15d
+
+alertmanager:
+  enabled: false
+
+nodeExporter:
+  enabled: true
+
+kube-state-metrics:
+  enabled: true

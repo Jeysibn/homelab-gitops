@@ -1,0 +1,27 @@
+adminPassword: "admin-change-me"
+
+persistence:
+  enabled: true
+  storageClassName: "longhorn"
+  size: 5Gi
+
+ingress:
+  enabled: true
+  ingressClassName: traefik
+  hosts:
+    - grafana.local
+
+# Automatically add Prometheus and Loki datasources inside Grafana
+datasources:
+  datasources.yaml:
+    apiVersion: 1
+    datasources:
+      - name: Prometheus
+        type: prometheus
+        url: http://prometheus-server.monitoring.svc.cluster.local
+        access: proxy
+        isDefault: true
+      - name: Loki
+        type: loki
+        url: http://loki-stack.monitoring.svc.cluster.local:3100
+        access: proxy

@@ -5,15 +5,20 @@ metadata:
   namespace: argocd
   annotations:
     argocd.argoproj.io/sync-wave: "1"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
 spec:
   project: default
   source:
-    repoURL: 'https://github.com/Jeysibn/homelab-gitops.git' # Replace with your GitHub URL
+    repoURL: 'https://github.com/jeysibn/homelab-gitops.git'
     targetRevision: HEAD
     path: kubernetes/apps/calico
   destination:
     server: 'https://kubernetes.default.svc'
-    namespace: calico-system
+    namespace: kube-system
   syncPolicy:
-    automated: { prune: true, selfHeal: true }
-    syncOptions: [ CreateNamespace=true ]
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

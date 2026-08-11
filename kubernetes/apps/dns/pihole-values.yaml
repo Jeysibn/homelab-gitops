@@ -1,0 +1,16 @@
+persistentVolumeClaim:
+  enabled: true
+  storageClass: "longhorn"
+  size: 5Gi
+
+adminPassword: "admin-change-me"
+
+serviceWeb:
+  type: LoadBalancer
+
+serviceDns:
+  type: LoadBalancer
+
+# Direct Pi-hole upstream traffic to the dedicated Unbound cluster service
+DNS1: "unbound.dns.svc.cluster.local"
+DNS2: "unbound.dns.svc.cluster.local"
