@@ -15,7 +15,7 @@ spec:
       targetRevision: 25.19.1
       helm:
         valueFiles:
-          - $values/kubernetes/apps/observability/prometheus-values.yaml
+          - $values/kubernetes/helm/observability/prometheus-values.yaml
     - repoURL: 'https://github.com/jeysibn/homelab-gitops.git'
       targetRevision: HEAD
       ref: values
@@ -46,7 +46,7 @@ spec:
       targetRevision: 2.10.1
       helm:
         valueFiles:
-          - $values/kubernetes/apps/observability/loki-values.yaml
+          - $values/kubernetes/helm/observability/loki-values.yaml
     - repoURL: 'https://github.com/jeysibn/homelab-gitops.git'
       targetRevision: HEAD
       ref: values
@@ -77,7 +77,7 @@ spec:
       targetRevision: 7.3.7
       helm:
         valueFiles:
-          - $values/kubernetes/apps/observability/grafana-values.yaml
+          - $values/kubernetes/helm/observability/grafana-values.yaml
     - repoURL: 'https://github.com/jeysibn/homelab-gitops.git'
       targetRevision: HEAD
       ref: values
@@ -108,7 +108,7 @@ spec:
       targetRevision: 0.2.0
       helm:
         valueFiles:
-          - $values/kubernetes/apps/observability/alloy-values.yaml
+          - $values/kubernetes/helm/observability/alloy-values.yaml
     - repoURL: 'https://github.com/jeysibn/homelab-gitops.git'
       targetRevision: HEAD
       ref: values
