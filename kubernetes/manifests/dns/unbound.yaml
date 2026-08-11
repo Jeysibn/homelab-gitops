@@ -3,8 +3,6 @@ kind: Deployment
 metadata:
   name: unbound
   namespace: dns
-  labels:
-    app: unbound
 spec:
   replicas: 1
   selector:
@@ -15,9 +13,22 @@ spec:
       labels:
         app: unbound
     spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 2000
+        runAsGroup: 2000
+        fsGroup: 2000
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: unbound
           image: mvance/unbound:1.19.0
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
           ports:
             - containerPort: 53
               name: dns-udp
@@ -25,21 +36,9 @@ spec:
             - containerPort: 53
               name: dns-tcp
               protocol: TCP
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: unbound
-  namespace: dns
-spec:
-  selector:
-    app: unbound
-  ports:
-    - name: dns-udp
-      port: 53
-      protocol: UDP
-      targetPort: 53
-    - name: dns-tcp
-      port: 53
-      protocol: TCP
-      targetPort: 53
+          volumeMounts:
+            - mountPath: /tmp
+              name: tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
