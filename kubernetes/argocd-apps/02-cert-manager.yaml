@@ -15,7 +15,7 @@ spec:
       targetRevision: v1.14.4
       helm:
         valueFiles:
-          - $values/kubernetes/apps/cert-manager/values.yaml
+          - $values/kubernetes/helm/cert-manager/values.yaml
     - repoURL: 'https://github.com/jeysibn/homelab-gitops.git'
       targetRevision: HEAD
       ref: values

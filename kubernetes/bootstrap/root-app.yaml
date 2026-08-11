@@ -9,7 +9,7 @@ spec:
   project: default
   source:
     repoURL: 'https://github.com/jeysibn/homelab-gitops.git'
-    targetRevision: HEAD
+    targetRevision: main
     path: kubernetes/argocd-apps
     directory:
       recurse: false
