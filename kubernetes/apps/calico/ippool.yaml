@@ -1,13 +1,10 @@
-apiVersion: projectcalico.org/v3
+apiVersion: projectcalico.org/3.3
 kind: IPPool
 metadata:
-  name: loadbalancer-ip-pool
+  name: default-ipv4-ippool
 spec:
-  # Adjust this range to an unused slice on your local home network (e.g. 192.168.1.200/29 provides 8 IPs: .200 - .207)
-  cidr: 192.168.86.200/29
-  blockSize: 32
-  natOutgoing: false
+  cidr: 10.244.0.0/16
+  ipipMode: Always
+  natOutgoing: true
   disabled: false
-  assignmentMode: Automatic
-  allowedUses:
-  - LoadBalancer
+  nodeSelector: all()
