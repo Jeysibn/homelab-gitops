@@ -12,8 +12,6 @@ on:
 
 permissions:
   contents: read
-  statuses: write
-  checks: write
 
 jobs:
   validate:
@@ -29,12 +27,16 @@ jobs:
         with:
           file_or_dir: kubernetes/
 
+      - name: Install Kubeconform
+        run: |
+          curl -sSL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz | tar xz
+          sudo mv kubeconform /usr/local/bin/
+
       - name: Run Kubeconform
-        uses: yannh/kubeconform-action@v0.8.0
-        with:
-          k8s-version: '1.30.0'
-          ignore-missing-schemas: true
-          schema-locations: |
-            default
-            https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json
-          files: 'kubernetes/'
+        run: |
+          kubeconform \
+            -kubernetes-version 1.30.0 \
+            -ignore-missing-schemas \
+            -schema-location default \
+            -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
+            kubernetes/
