@@ -42,14 +42,14 @@ jobs:
         run: |
           touch rendered-manifests.yaml
 
-          yq eval-all '
+          yq eval-all -N '
             select(.kind == "Application") |
             (.spec.sources[]?, .spec.source) |
             select(.chart != null) |
             [.chart, .repoURL, .targetRevision, (.helm.valueFiles[0] // "none")] |
             join("\t")
           ' kubernetes/argocd-apps/*.yaml | while IFS=$'\t' read -r chart repo version val_file; do
-            [ -z "$chart" ] && continue
+            if [ -z "$chart" ] || [ "$chart" = "---" ]; then continue; fi
             echo "Rendering $chart ($version) from $repo"
 
             # Strip $values/ prefix if present
