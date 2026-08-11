@@ -68,6 +68,7 @@ jobs:
           TF_VAR_proxmox_api_token: ${{ secrets.PROXMOX_API_TOKEN }}
           TF_VAR_proxmox_node: ${{ secrets.PROXMOX_NODE }}
           TF_VAR_ssh_public_key: ${{ secrets.SSH_PUBLIC_KEY }}
+          TF_VAR_proxmox_ssh_private_key: ${{ secrets.PROXMOX_SSH_PRIVATE_KEY }}
         run: terraform plan -input=false
 
       - name: Terraform Apply
@@ -77,4 +78,5 @@ jobs:
           TF_VAR_proxmox_api_token: ${{ secrets.PROXMOX_API_TOKEN }}
           TF_VAR_proxmox_node: ${{ secrets.PROXMOX_NODE }}
           TF_VAR_ssh_public_key: ${{ secrets.SSH_PUBLIC_KEY }}
+          TF_VAR_proxmox_ssh_private_key: ${{ secrets.PROXMOX_SSH_PRIVATE_KEY }}
         run: terraform apply -auto-approve -input=false
