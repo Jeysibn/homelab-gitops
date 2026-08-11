@@ -1,4 +1,4 @@
-name: Kubernetes & Helm Validation
+name: Lint & Validate Kubernetes
 
 on:
   workflow_dispatch: # Enables manual "Run workflow" bu
