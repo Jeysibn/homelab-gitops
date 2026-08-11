@@ -1,4 +1,4 @@
-name: Kubernetes Manifest Validation
+name: Kubernetes & Helm Validation
 
 on:
   push:
@@ -6,7 +6,7 @@ on:
     paths:
       - 'kubernetes/**'
   pull_request:
-    branches: [ main ]
+    branches: [ main, dev ]
     paths:
       - 'kubernetes/**'
 
@@ -15,27 +15,49 @@ permissions:
 
 jobs:
   validate:
-    name: Lint & Validate Kubernetes
+    name: Lint & Validate
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Setup YAML Linter
+      - name: YAML Syntax Check
         uses: ibiqlik/action-yamllint@v3
         with:
           file_or_dir: kubernetes/
 
-      - name: Install Kubeconform
+      - name: Install Tools
         run: |
           curl -sSL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz | tar xz
           sudo mv kubeconform /usr/local/bin/
+          curl -sSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
 
-      - name: Run Kubeconform
+      - name: Validate Manifests & ArgoCD Apps
         run: |
-          find kubernetes/ -type f \( -name "*.yaml" -o -name "*.yml" \) ! -name "*values*.yaml" | xargs kubeconform \
+          kubeconform \
             -kubernetes-version 1.30.0 \
+            -strict \
             -ignore-missing-schemas \
             -schema-location default \
-            -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json'
+            -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
+            kubernetes/manifests/ kubernetes/argocd-apps/
+
+      - name: Test Helm Values Rendering
+        run: |
+          helm repo add traefik https://traefik.github.io/charts
+          helm repo add cert-manager https://charts.jetstack.io
+          helm repo add longhorn https://charts.longhorn.io
+          helm repo add mojo2600 https://mojo2600.github.io/pihole-kubernetes/
+          helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+          helm repo add grafana https://grafana.github.io/helm-charts
+          helm repo update
+
+          helm template traefik traefik/traefik -f kubernetes/helm/traefik/values.yaml > /dev/null
+          helm template cert-manager cert-manager/cert-manager -f kubernetes/helm/cert-manager/values.yaml > /dev/null
+          helm template longhorn longhorn/longhorn -f kubernetes/helm/longhorn/values.yaml > /dev/null
+          helm template pihole mojo2600/pihole -f kubernetes/helm/pihole/values.yaml > /dev/null
+          helm template prometheus prometheus-community/prometheus -f kubernetes/helm/prometheus/values.yaml > /dev/null
+          helm template grafana grafana/grafana -f kubernetes/helm/grafana/values.yaml > /dev/null
+          helm template loki grafana/loki-stack -f kubernetes/helm/loki/values.yaml > /dev/null
+          helm template alloy grafana/alloy -f kubernetes/helm/alloy/values.yaml > /dev/null
