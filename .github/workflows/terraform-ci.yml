@@ -42,16 +42,14 @@ jobs:
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: "1.6.0"
+          cli_config_credentials_token: ${{ secrets.TF_API_TOKEN }}
+      
+      - name: 
           
       - name: Setup TFLint
         uses: terraform-linters/setup-tflint@v4
         with:
           tflint_version: v0.50.0
-
-      - name: Run TFLint
-        run: |
-          tflint --init
-          tflint
 
       - name: Terraform Init
         run: terraform init
@@ -60,6 +58,11 @@ jobs:
         run: |
           terraform fmt -check
           terraform validate
+
+      - name: Run TFLint
+        run: |
+          tflint --init
+          tflint
 
       - name: Terraform Plan
         env:
