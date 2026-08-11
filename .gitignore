@@ -1,0 +1,32 @@
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.backup
+*.tfvars
+*.tfvars.json
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Secrets & SSH Keys
+*.pem
+*.key
+*.pub
+id_rsa*
+id_ed25519*
+.env
+.env.*
+
+# Kubernetes & Local Kubeconfig
+kubeconfig
+*.kubeconfig
+.kube/
+
+# OS & Editor Files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
