@@ -44,8 +44,7 @@ resource "proxmox_virtual_environment_vm" "k3s_node" {
     }
     user_account {
       username = "ubuntu"
-      keys     = [var.ssh_public_key]
-      
+      keys     = [var.ssh_public_key] 
     }
   }
 }
