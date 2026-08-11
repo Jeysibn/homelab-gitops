@@ -6,7 +6,6 @@ metadata:
   labels:
     app: unbound
 spec:
-  fakePropertyField: "this-is-invalid"
   replicas: 1
   selector:
     matchLabels:
