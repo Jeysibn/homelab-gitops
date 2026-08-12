@@ -1,13 +1,13 @@
-apiVersion: crd.projectcalico.org/v1
+apiVersion: projectcalico.org/v3
 kind: IPPool
 metadata:
   name: loadbalancer-ips
 spec:
-  cidr: 192.168.86.200/29 # Change to an unused range on your local network
+  cidr: 192.168.86.200/29
   encapsulation: None
   nodeSelector: all()
 ---
-apiVersion: crd.projectcalico.org/v1
+apiVersion: projectcalico.org/v3
 kind: BGPAdvertisement
 metadata:
   name: loadbalancer-bgp-adv
