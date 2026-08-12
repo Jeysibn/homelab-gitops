@@ -3,7 +3,7 @@ kind: IPPool
 metadata:
   name: default-ipv4-ippool
 spec:
-  cidr: 10.244.0.0/16
+  cidr: 192.168.86.200/24
   ipipMode: Always
   natOutgoing: true
   disabled: false
