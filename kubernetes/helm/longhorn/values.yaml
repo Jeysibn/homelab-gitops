@@ -11,6 +11,9 @@ defaultSettings:
   storageMinimalAvailablePercentage: 15
   createDefaultDiskLabeledNodes: true
 
+preUpgradeChecker:
+  jobEnabled: false
+
 ingress:
   enabled: false
 
