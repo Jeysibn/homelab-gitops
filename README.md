@@ -8,6 +8,7 @@
 A production-grade, GitOps-driven local Kubernetes cluster. This repository serves as the single source of truth for my infrastructure, utilizing **Infrastructure as Code (IaC)** and the **ArgoCD App-of-Apps** pattern for zero-touch provisioning.
 
 ## 🏗️ Architecture & Tech Stack
+![System Architecture Diagram](docs/Architecture.png)
 
 *   **Infrastructure:** Proxmox VMs provisioned via **Terraform**.
 *   **Cluster Engine:** **K3s** (Lightweight Kubernetes).
