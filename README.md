@@ -13,7 +13,7 @@ A production-grade, GitOps-driven local Kubernetes cluster. This repository serv
 *   **Infrastructure:** Proxmox VMs provisioned via **Terraform**.
 *   **Cluster Engine:** **K3s** (Lightweight Kubernetes).
 *   **GitOps Controller:** **ArgoCD** (App-of-Apps pattern with Sync Waves).
-*   **Networking & Ingress:** **Calico** (CNI + IPAM LoadBalancer), **Traefik** (Ingress), **Cert-Manager** (TLS).
+*   **Networking & Ingress:** **Calico** (CNI), **MetalLB** (LoadBalancer IPAM), **Traefik** (Ingress), **Cert-Manager** (TLS).
 *   **DNS & Routing:** **Pi-hole** (Ad-block) + **Unbound** (Recursive) + **ExternalDNS** (Zero-touch records).
 *   **Storage:** **Longhorn** (Highly Available CSI).
 *   **Observability (Decoupled):** **Prometheus** (Metrics), **Loki** (Logs), **Grafana** (Visualization).
