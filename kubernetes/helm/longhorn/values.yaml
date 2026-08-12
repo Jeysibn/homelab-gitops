@@ -10,6 +10,7 @@ defaultSettings:
   replicaAutoBalance: disabled
   storageMinimalAvailablePercentage: 15
   createDefaultDiskLabeledNodes: true
+  defaultReplicaCount: 1
 
 preUpgradeChecker:
   jobEnabled: false
