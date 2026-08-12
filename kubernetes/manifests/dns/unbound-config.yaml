@@ -6,6 +6,7 @@ metadata:
 data:
   unbound.conf: |
     server:
+      do-daemonize: no
       verbosity: 1
       interface: 0.0.0.0
       port: 53
