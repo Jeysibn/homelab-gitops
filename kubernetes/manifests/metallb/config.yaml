@@ -1,0 +1,17 @@
+apiVersion: metallb.io/v1beta1
+kind: IPAddressPool
+metadata:
+  name: loadbalancer-pool
+  namespace: metallb-system
+spec:
+  addresses:
+  - 192.168.86.200-192.168.86.207 # Corresponds to 192.168.86.200/29
+---
+apiVersion: metallb.io/v1beta1
+kind: L2Advertisement
+metadata:
+  name: loadbalancer-l2-adv
+  namespace: metallb-system
+spec:
+  ipAddressPools:
+  - loadbalancer-pool
