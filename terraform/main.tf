@@ -18,6 +18,13 @@ resource "proxmox_virtual_environment_file" "cloud_config" {
   source_raw {
     data = <<-EOF
       #cloud-config
+      users:
+        - name: ubuntu
+          sudo: ALL=(ALL) NOPASSWD:ALL
+          groups: users, admin
+          shell: /bin/bash
+          ssh_authorized_keys:
+            - ${var.ssh_public_key}
       package_update: true
       packages:
         - qemu-guest-agent
@@ -77,11 +84,6 @@ resource "proxmox_virtual_environment_vm" "k3s_node" {
       ipv4 {
         address = "dhcp"
       }
-    }
-
-    user_account {
-      username = "ubuntu"
-      keys     = [var.ssh_public_key]
     }
   }
 }
