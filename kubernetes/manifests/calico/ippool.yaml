@@ -1,10 +1,16 @@
-apiVersion: projectcalico.org/3.3
+apiVersion: crd.projectcalico.org/v1
 kind: IPPool
 metadata:
-  name: default-ipv4-ippool
+  name: loadbalancer-ips
 spec:
-  cidr: 192.168.86.200/24
-  ipipMode: Always
-  natOutgoing: true
-  disabled: false
+  cidr: 192.168.86.200/29 # Change to an unused range on your local network
+  encapsulation: None
   nodeSelector: all()
+---
+apiVersion: crd.projectcalico.org/v1
+kind: BGPAdvertisement
+metadata:
+  name: loadbalancer-bgp-adv
+spec:
+  serviceLoadBalancerIPs:
+    - 192.168.86.200/29
