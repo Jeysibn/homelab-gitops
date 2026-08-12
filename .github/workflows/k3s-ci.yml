@@ -1,14 +1,13 @@
 name: K3s Manifest & Helm CI
+
 on:
-  workflow_dispatch: # Enables manual "Run workflow" bu
+  workflow_dispatch:
   push:
     branches: [ main, dev ]
     paths:
       - 'kubernetes/**'
   pull_request:
-    branches: [ main, dev ]
-    paths:
-      - 'kubernetes/**'
+    branches: [ main, dev ] # Removed paths filter so required check always reports status
 
 permissions:
   contents: read
@@ -47,11 +46,10 @@ jobs:
             select(.chart != null) |
             [.chart, .repoURL, .targetRevision, (.helm.valueFiles[0] // "none")] |
             join("\t")
-          ' kubernetes/argocd-apps/*.yaml | while IFS=$'\t' read -r chart repo version val_file; do
+          ' kubernetes/argocd-apps/*.yaml 2>/dev/null | while IFS=$'\t' read -r chart repo version val_file; do
             if [ -z "$chart" ] || [ "$chart" = "---" ]; then continue; fi
             echo "Rendering $chart ($version) from $repo"
 
-            # Strip $values/ prefix if present
             clean_val_file=$(echo "$val_file" | sed 's|\$values/||')
 
             if [ "$clean_val_file" != "none" ] && [ -f "$clean_val_file" ]; then
