@@ -13,6 +13,13 @@ spec:
       labels:
         app: unbound
     spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
       containers:
       - name: unbound
         image: klutchell/unbound:v1.20.0
@@ -24,15 +31,27 @@ spec:
           name: dns-tcp
           protocol: TCP
         securityContext:
-          readOnlyRootFilesystem: false
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - ALL
         volumeMounts:
         - name: config
           mountPath: /etc/unbound/unbound.conf
           subPath: unbound.conf
+        - name: tmp
+          mountPath: /tmp
+        - name: unbound-var
+          mountPath: /opt/unbound/etc/unbound/var
       volumes:
       - name: config
         configMap:
           name: unbound-config
+      - name: tmp
+        emptyDir: {}
+      - name: unbound-var
+        emptyDir: {}
 ---
 apiVersion: v1
 kind: ConfigMap
