@@ -23,4 +23,3 @@ podDnsConfig:
   nameservers:
   - unbound.dns.svc.cluster.local
   - unbound.dns.svc.cluster.local
-
