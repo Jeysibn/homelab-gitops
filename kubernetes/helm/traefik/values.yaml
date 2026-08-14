@@ -37,4 +37,4 @@ providers:
 service:
   enabled: true
   type: LoadBalancer
-  loadBalancerIP: "192.168.86.201" # Pick an IP from your 192.168.86.200/29 pool
+  loadBalancerIP: "192.168.86.200" # Pick an IP from your 192.168.86.200/29 pool
