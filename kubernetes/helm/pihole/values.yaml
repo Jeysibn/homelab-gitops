@@ -11,14 +11,8 @@ serviceWeb:
     metallb.universe.tf/allow-shared-ip: pihole-svc
   type: LoadBalancer
 
-serviceDnsUdp:
-  loadBalancerIP: 192.168.86,201
-  annotations:
-    metallb.universe.tf/allow-shared-ip: pihole-svc
-  type: LoadBalancer
-
-serviceDnsTcp:
-  loadBalancerIP: 192.168.86,201
+serviceDns:
+  loadBalancerIP: 192.168.86.201
   annotations:
     metallb.universe.tf/allow-shared-ip: pihole-svc
   type: LoadBalancer
