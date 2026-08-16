@@ -17,7 +17,7 @@ spec:
         valueFiles:
           - $values/kubernetes/helm/prometheus/values.yaml
     - repoURL: 'https://github.com/jeysibn/homelab-gitops.git'
-      targetRevision: HEAD
+      targetRevision: main
       ref: values
   destination:
     server: 'https://kubernetes.default.svc'
@@ -48,7 +48,7 @@ spec:
         valueFiles:
           - $values/kubernetes/helm/loki/values.yaml
     - repoURL: 'https://github.com/jeysibn/homelab-gitops.git'
-      targetRevision: HEAD
+      targetRevision: main
       ref: values
   destination:
     server: 'https://kubernetes.default.svc'
@@ -79,7 +79,7 @@ spec:
         valueFiles:
           - $values/kubernetes/helm/grafana/values.yaml
     - repoURL: 'https://github.com/jeysibn/homelab-gitops.git'
-      targetRevision: HEAD
+      targetRevision: main
       ref: values
   destination:
     server: 'https://kubernetes.default.svc'
@@ -110,7 +110,7 @@ spec:
         valueFiles:
           - $values/kubernetes/helm/alloy/values.yaml
     - repoURL: 'https://github.com/jeysibn/homelab-gitops.git'
-      targetRevision: HEAD
+      targetRevision: main
       ref: values
   destination:
     server: 'https://kubernetes.default.svc'
