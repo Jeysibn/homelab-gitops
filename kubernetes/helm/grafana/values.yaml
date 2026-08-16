@@ -9,7 +9,7 @@ ingress:
   enabled: true
   ingressClassName: traefik
   hosts:
-    - grafana.local
+    - grafana.homelab.local
 
 # Automatically add Prometheus and Loki datasources inside Grafana
 datasources:
@@ -18,10 +18,4 @@ datasources:
     datasources:
       - name: Prometheus
         type: prometheus
-        url: http://prometheus-server.monitoring.svc.cluster.local
-        access: proxy
-        isDefault: true
-      - name: Loki
-        type: loki
-        url: http://loki-stack.monitoring.svc.cluster.local:3100
-        access: proxy
+        url: http
