@@ -9,7 +9,7 @@ ingress:
   enabled: true
   ingressClassName: traefik
   hosts:
-    - grafana.local
+    - grafana.homelab.local
 
 # Automatically add Prometheus and Loki datasources inside Grafana
 datasources:
