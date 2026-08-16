@@ -30,6 +30,7 @@ metadata:
   name: unbound
   namespace: dns
 spec:
+  clusterIP: 10.43.151.153
   ports:
   - name: dns-udp
     port: 5335
