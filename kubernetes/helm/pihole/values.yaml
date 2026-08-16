@@ -27,8 +27,8 @@ ingress:
   hosts:
     - pihole.homelab.local
 
-DNS1: "unbound.dns.svc.cluster.local#5335"
-DNS2: "unbound.dns.svc.cluster.local#5335"
+DNS1: "10.43.151.153#5335"
+DNS2: "10.43.151.153#5335"
 
 dnsmasq:
   customDnsEntries:
