@@ -4,6 +4,11 @@ server:
     storageClass: "longhorn"
     size: 10Gi
   retention: 15d
+  ingress:
+    enabled: true
+    ingressClassName: traefik
+    hosts:
+      - prometheus.homelab.local
 
 alertmanager:
   enabled: false
