@@ -11,7 +11,7 @@ spec:
   project: default
   source:
     repoURL: 'https://github.com/jeysibn/homelab-gitops.git'
-    targetRevision: HEAD
+    targetRevision: main
     path: kubernetes/manifests/cert-manager
   destination:
     server: 'https://kubernetes.default.svc'

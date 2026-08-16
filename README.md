@@ -5,33 +5,75 @@
 ![Terraform](https://img.shields.io/badge/IaC-Terraform-purple?logo=terraform)
 ![Proxmox](https://img.shields.io/badge/Hypervisor-Proxmox-darkgreen?logo=proxmox)
 
-A production-grade, GitOps-driven local Kubernetes cluster. This repository serves as the single source of truth for my infrastructure, utilizing **Infrastructure as Code (IaC)** and the **ArgoCD App-of-Apps** pattern for zero-touch provisioning.
+A GitOps-driven local Kubernetes homelab. This repository is the source of truth for the infrastructure, using **Terraform**, **K3s**, and the **Argo CD App-of-Apps** pattern to manage cluster services from Git.
 
 ## 🏗️ Architecture & Tech Stack
+
 ![System Architecture Diagram](docs/Architecture.png)
 
-*   **Infrastructure:** Proxmox VMs provisioned via **Terraform**.
-*   **Cluster Engine:** **K3s** (Lightweight Kubernetes).
-*   **GitOps Controller:** **ArgoCD** (App-of-Apps pattern with Sync Waves).
-*   **Networking & Ingress:** **Calico** (CNI), **MetalLB** (LoadBalancer IPAM), **Traefik** (Ingress), **Cert-Manager** (TLS).
-*   **DNS & Routing:** **Pi-hole** (Ad-block) + **Unbound** (Recursive) + **ExternalDNS** (Zero-touch records).
-*   **Storage:** **Longhorn** (Highly Available CSI).
-*   **Observability (Decoupled):** **Prometheus** (Metrics), **Loki** (Logs), **Grafana** (Visualization).
-*   **Remote Access:** **Tailscale** (Subnet routing).
+* **Infrastructure:** Proxmox VM provisioned with Terraform.
+* **Cluster Engine:** K3s lightweight Kubernetes.
+* **GitOps Controller:** Argo CD App-of-Apps with sync waves.
+* **Networking & Ingress:** Calico CNI, MetalLB LoadBalancer IPAM, Traefik ingress.
+* **TLS:** cert-manager with local self-signed issuer by default. Public Let’s Encrypt requires a real DNS domain and reachable HTTP-01 or DNS-01 validation.
+* **DNS & Routing:** Pi-hole for LAN DNS/ad-blocking and Unbound for recursive upstream DNS.
+* **Storage:** Longhorn CSI. Current setup is single-node with one replica; HA requires additional nodes/disks.
+* **Observability:** Prometheus metrics, Loki logs, Grafana dashboards, and Alloy log collection.
+* **Remote Access:** Tailscale for CI or remote homelab access.
 
-## ⚙️ The GitOps Workflow
+See [docs/Service-Catalog.md](docs/Service-Catalog.md) for service URLs, namespaces, and exposure methods.
 
-1. **Develop:** Code changes (Terraform or Kubernetes YAML) are pushed to a feature branch.
-2. **Validate:** GitHub Actions CI pipelines automatically lint and validate manifests (`kubeconform`, `tflint`).
-3. **Merge:** Upon PR approval, code is merged to `main`.
-4. **Reconcile:** ArgoCD detects state drift and automatically synchronizes the K3s cluster to match the repository.
+## ⚙️ GitOps Workflow
 
-## 🚀 Bootstrap Process (Disaster Recovery)
+1. **Develop:** Changes are made on `dev`.
+2. **Validate:** GitHub Actions checks Kubernetes manifests, Helm rendering, Kubeconform, Trivy, Terraform format/validate, and TFLint where applicable.
+3. **Promote:** A pull request merges `dev` into `main` after checks pass.
+4. **Reconcile:** Argo CD watches `main` and reconciles the K3s cluster to match the repository.
 
-The entire cluster can be rebuilt from bare metal in under 15 minutes:
+## 🚀 Bootstrap Process
 
-1. Provision VMs: `cd terraform && terraform apply`
-2. Bootstrap K3s & CNI: `./kubernetes/bootstrap/k3s-install.sh`
-3. Install GitOps Engine: `kubectl apply -n argocd --server-side -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml`
-4. Trigger Automation: `kubectl apply -f kubernetes/root-app-of-apps.yaml`
+Use this flow for a new node or disaster recovery rebuild.
 
+1. Provision the VM:
+
+   ```bash
+   cd terraform
+   terraform apply
+   ```
+
+2. Install K3s and the bootstrap CNI:
+
+   ```bash
+   ./kubernetes/bootstrap/install-k3s.sh
+   ```
+
+3. Install Argo CD and apply the root application:
+
+   ```bash
+   ./kubernetes/bootstrap/install-argocd.sh
+   ```
+
+4. Verify Argo CD and cluster services:
+
+   ```bash
+   kubectl get app -n argocd
+   kubectl get pods -A
+   kubectl get svc -A | grep LoadBalancer
+   ```
+
+## 🌐 Local Routing Model
+
+Traefik is the main HTTP/HTTPS entrypoint at `192.168.86.200`. Pi-hole provides LAN DNS on `192.168.86.201` and resolves `*.homelab.local` hostnames back to Traefik.
+
+Expected core routes:
+
+| Service | Hostname |
+| --- | --- |
+| Grafana | `grafana.homelab.local` |
+| Pi-hole Web UI | `pihole.homelab.local` |
+| Longhorn UI | `longhorn.homelab.local` |
+| Prometheus | `prometheus.homelab.local` |
+
+## 🔐 Secrets Status
+
+Some admin passwords are still placeholders in Helm values. The next recommended milestone is to move application credentials into a proper secrets workflow such as SOPS, Sealed Secrets, or External Secrets Operator.

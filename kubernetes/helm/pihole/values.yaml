@@ -27,12 +27,8 @@ ingress:
   hosts:
     - pihole.homelab.local
 
-podDnsConfig:
-  enabled: true
-  policy: "None"
-  nameservers:
-    - unbound.dns.svc.cluster.local
-    - unbound.dns.svc.cluster.local
+DNS1: "unbound.dns.svc.cluster.local#5335"
+DNS2: "unbound.dns.svc.cluster.local#5335"
 
 dnsmasq:
   customDnsEntries:
