@@ -17,4 +17,23 @@ serviceDns:
   type: LoadBalancer
 
 serviceDhcp:
-  enabled: "
+  enabled: "false"
+
+ingress:
+  enabled: true
+  ingressClassName: traefik
+  path: /
+  pathType: Prefix
+  hosts:
+    - pihole.homelab.local
+
+podDnsConfig:
+  enabled: true
+  policy: "None"
+  nameservers:
+    - unbound.dns.svc.cluster.local
+    - unbound.dns.svc.cluster.local
+
+dnsmasq:
+  customDnsEntries:
+    - address=/homelab.local/192.168.86.200
