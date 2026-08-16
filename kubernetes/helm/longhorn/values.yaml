@@ -16,7 +16,9 @@ preUpgradeChecker:
   jobEnabled: false
 
 ingress:
-  enabled: false
+  enabled: true
+  ingressClassName: traefik
+  host: longhorn.homelab.local
 
 longhornUI:
   replicas: 1
