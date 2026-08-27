@@ -60,7 +60,7 @@ applications:
     path: ""
     targetRevision: 2.27.0
     namespace: dns
-    syncWave: "3"
+    syncWave: "4"
     prune: true
     selfHeal: true
     sourceCount: 2

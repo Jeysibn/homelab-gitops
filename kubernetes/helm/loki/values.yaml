@@ -1,5 +1,9 @@
 loki:
   enabled: true
+  # loki-stack 2.10.1 defaults to Loki 2.6.1, which is too old for the
+  # health-check query used by Grafana 10.4.0.
+  image:
+    tag: 2.9.3
   persistence:
     enabled: true
     storageClassName: "longhorn"

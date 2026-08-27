@@ -60,7 +60,9 @@ applications:
     targetRevision: 2.27.0
     valuesFile: kubernetes/helm/pihole/values.yaml
     namespace: dns
-    syncWave: 3
+    # Pi-hole forwards to Unbound, so let the recursive resolver become
+    # healthy before starting the DNS frontend on a fresh cluster.
+    syncWave: 4
 
   - name: prometheus
     repository: https://prometheus-community.github.io/helm-charts
