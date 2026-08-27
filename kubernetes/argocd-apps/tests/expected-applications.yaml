@@ -1,0 +1,141 @@
+applications:
+  - name: calico-operator
+    repoURL: https://docs.tigera.io/calico/charts
+    chart: tigera-operator
+    path: ""
+    targetRevision: v3.28.0
+    namespace: tigera-operator
+    syncWave: "1"
+    prune: false
+    selfHeal: true
+    sourceCount: 1
+    finalizerCount: 0
+  - name: longhorn
+    repoURL: https://charts.longhorn.io
+    chart: longhorn
+    path: ""
+    targetRevision: 1.6.2
+    namespace: longhorn-system
+    syncWave: "1"
+    prune: true
+    selfHeal: true
+    sourceCount: 2
+    finalizerCount: 1
+  - name: metallb
+    repoURL: https://metallb.github.io/metallb
+    chart: metallb
+    path: ""
+    targetRevision: 0.14.8
+    namespace: metallb-system
+    syncWave: "1"
+    prune: true
+    selfHeal: true
+    sourceCount: 1
+    finalizerCount: 1
+  - name: cert-manager
+    repoURL: https://charts.jetstack.io
+    chart: cert-manager
+    path: ""
+    targetRevision: v1.14.4
+    namespace: cert-manager
+    syncWave: "2"
+    prune: true
+    selfHeal: true
+    sourceCount: 2
+    finalizerCount: 1
+  - name: traefik
+    repoURL: https://traefik.github.io/charts
+    chart: traefik
+    path: ""
+    targetRevision: 28.0.0
+    namespace: traefik-system
+    syncWave: "2"
+    prune: true
+    selfHeal: true
+    sourceCount: 2
+    finalizerCount: 1
+  - name: pihole-dns
+    repoURL: https://mojo2600.github.io/pihole-kubernetes/
+    chart: pihole
+    path: ""
+    targetRevision: 2.27.0
+    namespace: dns
+    syncWave: "3"
+    prune: true
+    selfHeal: true
+    sourceCount: 2
+    finalizerCount: 1
+  - name: prometheus
+    repoURL: https://prometheus-community.github.io/helm-charts
+    chart: prometheus
+    path: ""
+    targetRevision: 25.19.1
+    namespace: monitoring
+    syncWave: "3"
+    prune: true
+    selfHeal: true
+    sourceCount: 2
+    finalizerCount: 1
+  - name: loki
+    repoURL: https://grafana.github.io/helm-charts
+    chart: loki-stack
+    path: ""
+    targetRevision: 2.10.1
+    namespace: monitoring
+    syncWave: "3"
+    prune: true
+    selfHeal: true
+    sourceCount: 2
+    finalizerCount: 1
+  - name: grafana
+    repoURL: https://grafana.github.io/helm-charts
+    chart: grafana
+    path: ""
+    targetRevision: 7.3.7
+    namespace: monitoring
+    syncWave: "3"
+    prune: true
+    selfHeal: true
+    sourceCount: 2
+    finalizerCount: 1
+  - name: alloy
+    repoURL: https://grafana.github.io/helm-charts
+    chart: alloy
+    path: ""
+    targetRevision: 0.2.0
+    namespace: monitoring
+    syncWave: "3"
+    prune: true
+    selfHeal: true
+    sourceCount: 2
+    finalizerCount: 1
+  - name: metallb-config
+    repoURL: https://github.com/jeysibn/homelab-gitops.git
+    chart: ""
+    path: kubernetes/manifests/metallb
+    namespace: metallb-system
+    syncWave: "2"
+    prune: true
+    selfHeal: true
+    sourceCount: 1
+    finalizerCount: 1
+  - name: cluster-issuer
+    repoURL: https://github.com/jeysibn/homelab-gitops.git
+    chart: ""
+    path: kubernetes/manifests/cert-manager
+    namespace: cert-manager
+    syncWave: "2"
+    prune: true
+    selfHeal: true
+    sourceCount: 1
+    finalizerCount: 1
+  - name: unbound-dns
+    repoURL: https://github.com/jeysibn/homelab-gitops.git
+    chart: ""
+    path: kubernetes/manifests/dns
+    namespace: dns
+    syncWave: "3"
+    prune: true
+    selfHeal: true
+    sourceCount: 1
+    finalizerCount: 1
