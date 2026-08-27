@@ -4,6 +4,14 @@ server:
     storageClass: "longhorn"
     size: 10Gi
   retention: 15d
+  retentionSize: 7GB
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 300m
+      memory: 512Mi
   ingress:
     enabled: true
     ingressClassName: traefik
@@ -15,6 +23,20 @@ alertmanager:
 
 nodeExporter:
   enabled: true
+  resources:
+    requests:
+      cpu: 10m
+      memory: 24Mi
+    limits:
+      cpu: 50m
+      memory: 64Mi
 
 kube-state-metrics:
   enabled: true
+  resources:
+    requests:
+      cpu: 25m
+      memory: 64Mi
+    limits:
+      cpu: 100m
+      memory: 128Mi

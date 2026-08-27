@@ -15,6 +15,34 @@ defaultSettings:
   createDefaultDiskLabeledNodes: false
   defaultReplicaCount: 1
 
+longhornManager:
+  resources:
+    requests:
+      cpu: 25m
+      memory: 64Mi
+    limits:
+      cpu: 100m
+      memory: 128Mi
+
+longhornDriver:
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      cpu: 50m
+      memory: 64Mi
+
+longhornUI:
+  replicas: 1
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      cpu: 50m
+      memory: 64Mi
+
 preUpgradeChecker:
   jobEnabled: false
 
@@ -22,6 +50,3 @@ ingress:
   enabled: true
   ingressClassName: traefik
   host: longhorn.homelab.local
-
-longhornUI:
-  replicas: 1
