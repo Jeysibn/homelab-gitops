@@ -5,7 +5,7 @@ metadata:
   namespace: metallb-system
 spec:
   addresses:
-  - 192.168.86.200-192.168.86.207 # Corresponds to 192.168.86.200/29
+  - 192.168.86.200-192.168.86.207  # Corresponds to 192.168.86.200/29
 ---
 apiVersion: metallb.io/v1beta1
 kind: L2Advertisement
