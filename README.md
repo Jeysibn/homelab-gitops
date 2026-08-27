@@ -23,12 +23,16 @@ A GitOps-driven local Kubernetes homelab. This repository is the source of truth
 
 See [docs/Service-Catalog.md](docs/Service-Catalog.md) for service URLs, namespaces, and exposure methods.
 
+See [docs/Proxmox-Environment.md](docs/Proxmox-Environment.md) for the current Proxmox node and K3s VM inventory, including the captured environment overview.
+
 ## ⚙️ GitOps Workflow
 
 1. **Develop:** Changes are made on `dev`.
 2. **Validate:** GitHub Actions checks Kubernetes manifests, Helm rendering, Kubeconform, Trivy, Terraform format/validate, and TFLint where applicable.
 3. **Promote:** A pull request merges `dev` into `main` after checks pass.
-4. **Reconcile:** Argo CD watches `main` and reconciles the K3s cluster to match the repository.
+4. **Reconcile:** Argo CD watches `main`, renders the application registry, and reconciles the K3s cluster to match the repository.
+
+The Argo CD Application registry is documented in [docs/Argo-Application-Registry.md](docs/Argo-Application-Registry.md).
 
 ## 🚀 Bootstrap Process
 
