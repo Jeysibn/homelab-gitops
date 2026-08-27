@@ -85,6 +85,18 @@ spec:
           requests:
             cpu: 50m
             memory: 64Mi
+        readinessProbe:
+          tcpSocket:
+            port: 5335
+          periodSeconds: 5
+          timeoutSeconds: 2
+          failureThreshold: 12
+        livenessProbe:
+          tcpSocket:
+            port: 5335
+          periodSeconds: 10
+          timeoutSeconds: 2
+          failureThreshold: 3
         securityContext:
           allowPrivilegeEscalation: false
           readOnlyRootFilesystem: true
