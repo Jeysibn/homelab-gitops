@@ -44,22 +44,22 @@ jobs:
 
       - name: 3. Verify Argo application registry semantics
         run: |
-          yq eval-all -o=json '
-            select(.kind == "Application") |
-            {
-              name: .metadata.name,
-              repoURL: (.spec.source.repoURL // .spec.sources[0].repoURL // ""),
-              chart: (.spec.source.chart // .spec.sources[0].chart // ""),
-              path: (.spec.source.path // ""),
-              targetRevision: (.spec.source.targetRevision // .spec.sources[0].targetRevision // ""),
-              namespace: .spec.destination.namespace,
-              syncWave: .metadata.annotations."argocd.argoproj.io/sync-wave",
-              prune: .spec.syncPolicy.automated.prune,
-              selfHeal: .spec.syncPolicy.automated.selfHeal,
-              sourceCount: ((.spec.sources // [.spec.source]) | length),
-              finalizerCount: ((.metadata.finalizers // []) | length)
-            }
-          ' rendered-manifests.yaml | jq -s 'sort_by(.name)' > /tmp/rendered-applications.json
+          yq eval-all -o=json 'select(.kind == "Application")' rendered-manifests.yaml |
+            jq -s '
+              map({
+                name: .metadata.name,
+                repoURL: (.spec.source.repoURL // .spec.sources[0].repoURL // ""),
+                chart: (.spec.source.chart // .spec.sources[0].chart // ""),
+                path: (.spec.source.path // ""),
+                targetRevision: (.spec.source.targetRevision // .spec.sources[0].targetRevision // ""),
+                namespace: .spec.destination.namespace,
+                syncWave: .metadata.annotations."argocd.argoproj.io/sync-wave",
+                prune: .spec.syncPolicy.automated.prune,
+                selfHeal: .spec.syncPolicy.automated.selfHeal,
+                sourceCount: ((.spec.sources // [.spec.source]) | length),
+                finalizerCount: ((.metadata.finalizers // []) | length)
+              }) | sort_by(.name)
+            ' > /tmp/rendered-applications.json
 
           yq -o=json '.applications | sort_by(.name)' \
             kubernetes/argocd-apps/tests/expected-applications.yaml > /tmp/expected-applications.json
