@@ -8,7 +8,7 @@ applications:
     syncWave: "1"
     prune: false
     selfHeal: true
-    sourceCount: 1
+    sourceCount: 2
     finalizerCount: 0
   - name: longhorn
     repoURL: https://charts.longhorn.io
@@ -30,7 +30,7 @@ applications:
     syncWave: "1"
     prune: true
     selfHeal: true
-    sourceCount: 1
+    sourceCount: 2
     finalizerCount: 1
   - name: cert-manager
     repoURL: https://charts.jetstack.io

@@ -27,4 +27,16 @@ The current single-node design means:
 - PostgreSQL persistence still requires independent backups.
 - Additional Proxmox VMs and Kubernetes nodes are required before using replicated workloads and storage for high availability.
 
+## Resource-right-sizing baseline
+
+The workloads are sized for this single 4-vCPU/8-GiB node. Helm-managed services
+have explicit requests and limits in `kubernetes/helm/`; low-traffic platform
+components use small reservations, while Prometheus, Loki, and Grafana retain
+larger memory ceilings for query and ingestion bursts. Prometheus is capped at
+7 GB of TSDB data and Loki at 7 days of logs.
+
+Existing PVC sizes were intentionally not reduced: Kubernetes and Longhorn do
+not generally support shrinking an already-bound claim. Reclaiming space should
+be done with a planned backup, migration, and claim recreation.
+
 See [Architecture](Architecture.png), [Service Catalog](Service-Catalog.md), and [Troubleshooting](Troubleshooting.md) for the broader platform documentation.

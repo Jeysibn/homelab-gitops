@@ -1,5 +1,13 @@
 adminPassword: "admin-change-me"
 
+resources:
+  requests:
+    cpu: 25m
+    memory: 64Mi
+  limits:
+    cpu: 100m
+    memory: 256Mi
+
 persistence:
   enabled: true
   storageClassName: "longhorn"
