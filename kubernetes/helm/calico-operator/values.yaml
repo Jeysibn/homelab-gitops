@@ -1,0 +1,11 @@
+resources:
+  requests:
+    cpu: 10m
+    memory: 32Mi
+  limits:
+    cpu: 50m
+    memory: 64Mi
+
+# The cluster currently has one node; a second Typha replica would remain
+# unschedulable and only add avoidable memory pressure.
+controlPlaneReplicas: 1
