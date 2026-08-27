@@ -113,6 +113,7 @@ applications:
     repoURL: https://github.com/jeysibn/homelab-gitops.git
     chart: ""
     path: kubernetes/manifests/metallb
+    targetRevision: main
     namespace: metallb-system
     syncWave: "2"
     prune: true
@@ -123,6 +124,7 @@ applications:
     repoURL: https://github.com/jeysibn/homelab-gitops.git
     chart: ""
     path: kubernetes/manifests/cert-manager
+    targetRevision: main
     namespace: cert-manager
     syncWave: "2"
     prune: true
@@ -133,6 +135,7 @@ applications:
     repoURL: https://github.com/jeysibn/homelab-gitops.git
     chart: ""
     path: kubernetes/manifests/dns
+    targetRevision: main
     namespace: dns
     syncWave: "3"
     prune: true
