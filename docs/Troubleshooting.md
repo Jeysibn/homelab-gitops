@@ -13,6 +13,8 @@ This document details historical configuration issues, root causes, and technica
 | **Script Parsing Failures** | High | `jq` crashed on scalar strings and `yq` passed YAML document separators (`---`) as chart names. | Updated rendering step to `yq eval-all -N` with token filtering inside the bash loop. |
 | **Trivy Security Scan Failures** | High | `unbound.yaml` failed security checks (`KSV-0014`, `KSV-0118`) due to unconfigured security contexts. | Added non-root `securityContext`, dropped capabilities, enabled `readOnlyRootFilesystem`, and added `/tmp` `emptyDir`. |
 | **Workflow Execution Filtering** | Low | Pipeline did not trigger on custom feature or test branches. | Updated `on.push.branches` filters and added `workflow_dispatch` for manual UI triggers. |
+| **Fresh-cluster DNS startup** | High | Pi-hole and Unbound were reconciled together, and DHCP used the string value `"false"`, which Helm can evaluate as enabled. | Start Pi-hole after Unbound, use a boolean `false`, and expose Unbound readiness/liveness checks. |
+| **CoreDNS upstream reset** | High | The CoreDNS ConfigMap was edited manually, so a fresh K3s install did not contain the public upstream resolvers. | Apply K3s's supported `coredns-custom` override during bootstrap with Cloudflare (`1.1.1.1`) and Google (`8.8.8.8`) DNS. |
 
 ---
 
