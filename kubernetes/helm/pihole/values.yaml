@@ -5,6 +5,14 @@ persistentVolumeClaim:
 
 adminPassword: "admin-change-me"
 
+resources:
+  requests:
+    cpu: 25m
+    memory: 64Mi
+  limits:
+    cpu: 100m
+    memory: 256Mi
+
 virtualHost: pihole.homelab.local
 
 serviceWeb:

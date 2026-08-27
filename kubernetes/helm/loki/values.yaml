@@ -4,10 +4,20 @@ loki:
   # health-check query used by Grafana 10.4.0.
   image:
     tag: 2.9.3
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 200m
+      memory: 384Mi
   persistence:
     enabled: true
     storageClassName: "longhorn"
     size: 10Gi
+  table_manager:
+    retention_deletes_enabled: true
+    retention_period: 168h
 
 promtail:
   enabled: false

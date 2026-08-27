@@ -16,6 +16,7 @@ applications:
     repository: https://docs.tigera.io/calico/charts
     chart: tigera-operator
     targetRevision: v3.28.0
+    valuesFile: kubernetes/helm/calico-operator/values.yaml
     namespace: tigera-operator
     syncWave: 1
     prune: false
@@ -35,6 +36,7 @@ applications:
     repository: https://metallb.github.io/metallb
     chart: metallb
     targetRevision: 0.14.8
+    valuesFile: kubernetes/helm/metallb/values.yaml
     namespace: metallb-system
     syncWave: 1
 

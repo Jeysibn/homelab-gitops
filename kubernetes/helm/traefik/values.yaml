@@ -2,6 +2,14 @@ deployment:
   enabled: true
   replicas: 1
 
+resources:
+  requests:
+    cpu: 25m
+    memory: 64Mi
+  limits:
+    cpu: 100m
+    memory: 128Mi
+
 ports:
   web:
     port: 8000
