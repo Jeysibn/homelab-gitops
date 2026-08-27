@@ -1,0 +1,53 @@
+{{- range .Values.applications }}
+{{- $app := . }}
+{{- $defaults := $.Values.defaults }}
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: {{ $app.name | quote }}
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: {{ $app.syncWave | quote }}
+{{ if hasKey $app "finalizers" }}
+  finalizers:
+{{ toYaml $app.finalizers | indent 4 }}
+{{ else }}
+  finalizers:
+{{ toYaml $defaults.finalizers | indent 4 }}
+{{ end }}
+spec:
+  project: {{ $defaults.project | quote }}
+{{- if $app.valuesFile }}
+  sources:
+    - repoURL: {{ $app.repository | quote }}
+      chart: {{ $app.chart | quote }}
+      targetRevision: {{ $app.targetRevision | quote }}
+      helm:
+        valueFiles:
+          - $values/{{ $app.valuesFile }}
+    - repoURL: {{ $.Values.git.repository | quote }}
+      targetRevision: {{ $.Values.git.revision | quote }}
+      ref: values
+{{- else }}
+  source:
+    repoURL: {{ $app.repository | quote }}
+    chart: {{ $app.chart | quote }}
+    targetRevision: {{ $app.targetRevision | quote }}
+{{- end }}
+  destination:
+    server: {{ $defaults.destinationServer | quote }}
+    namespace: {{ $app.namespace | quote }}
+  syncPolicy:
+    automated:
+      prune: {{ if hasKey $app "prune" }}{{ $app.prune }}{{ else }}{{ $defaults.prune }}{{ end }}
+      selfHeal: {{ if hasKey $app "selfHeal" }}{{ $app.selfHeal }}{{ else }}{{ $defaults.selfHeal }}{{ end }}
+    syncOptions:
+{{ if hasKey $app "createNamespace" }}{{ if $app.createNamespace }}
+      - CreateNamespace=true
+{{ end }}{{ else }}{{ if $defaults.createNamespace }}
+      - CreateNamespace=true
+{{ end }}{{ end }}{{ with $app.syncOptions }}
+{{ toYaml . | indent 6 }}
+{{ end }}
+---
+{{- end }}

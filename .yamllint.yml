@@ -1,5 +1,9 @@
 extends: default
 
+# Helm templates are rendered and validated separately by Helm and Kubeconform.
+ignore: |
+  kubernetes/argocd-apps/templates/*.yaml
+
 rules:
   line-length: disable
   document-start: disable
