@@ -1,0 +1,95 @@
+git:
+  repository: https://github.com/jeysibn/homelab-gitops.git
+  revision: main
+
+defaults:
+  project: default
+  destinationServer: https://kubernetes.default.svc
+  prune: true
+  selfHeal: true
+  createNamespace: true
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+
+applications:
+  - name: calico-operator
+    repository: https://docs.tigera.io/calico/charts
+    chart: tigera-operator
+    targetRevision: v3.28.0
+    namespace: tigera-operator
+    syncWave: 1
+    prune: false
+    finalizers: []
+
+  - name: longhorn
+    repository: https://charts.longhorn.io
+    chart: longhorn
+    targetRevision: 1.6.2
+    valuesFile: kubernetes/helm/longhorn/values.yaml
+    namespace: longhorn-system
+    syncWave: 1
+    syncOptions:
+      - SkipHooks=true
+
+  - name: metallb
+    repository: https://metallb.github.io/metallb
+    chart: metallb
+    targetRevision: 0.14.8
+    namespace: metallb-system
+    syncWave: 1
+
+  - name: cert-manager
+    repository: https://charts.jetstack.io
+    chart: cert-manager
+    targetRevision: v1.14.4
+    valuesFile: kubernetes/helm/cert-manager/values.yaml
+    namespace: cert-manager
+    syncWave: 2
+
+  - name: traefik
+    repository: https://traefik.github.io/charts
+    chart: traefik
+    targetRevision: 28.0.0
+    valuesFile: kubernetes/helm/traefik/values.yaml
+    namespace: traefik-system
+    syncWave: 2
+
+  - name: pihole-dns
+    repository: https://mojo2600.github.io/pihole-kubernetes/
+    chart: pihole
+    targetRevision: 2.27.0
+    valuesFile: kubernetes/helm/pihole/values.yaml
+    namespace: dns
+    syncWave: 3
+
+  - name: prometheus
+    repository: https://prometheus-community.github.io/helm-charts
+    chart: prometheus
+    targetRevision: 25.19.1
+    valuesFile: kubernetes/helm/prometheus/values.yaml
+    namespace: monitoring
+    syncWave: 3
+
+  - name: loki
+    repository: https://grafana.github.io/helm-charts
+    chart: loki-stack
+    targetRevision: 2.10.1
+    valuesFile: kubernetes/helm/loki/values.yaml
+    namespace: monitoring
+    syncWave: 3
+
+  - name: grafana
+    repository: https://grafana.github.io/helm-charts
+    chart: grafana
+    targetRevision: 7.3.7
+    valuesFile: kubernetes/helm/grafana/values.yaml
+    namespace: monitoring
+    syncWave: 3
+
+  - name: alloy
+    repository: https://grafana.github.io/helm-charts
+    chart: alloy
+    targetRevision: 0.2.0
+    valuesFile: kubernetes/helm/alloy/values.yaml
+    namespace: monitoring
+    syncWave: 3

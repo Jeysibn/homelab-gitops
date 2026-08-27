@@ -38,28 +38,35 @@ jobs:
 
       - name: 2. Helm Template & Render Check
         run: |
-          touch rendered-manifests.yaml
+          helm lint kubernetes/argocd-apps
+          helm template argocd-applications kubernetes/argocd-apps \
+            --namespace argocd > rendered-manifests.yaml
 
-          yq eval-all -N '
-            select(.kind == "Application") |
-            (.spec.sources[]?, .spec.source) |
-            select(.chart != null) |
-            [.chart, .repoURL, .targetRevision, (.helm.valueFiles[0] // "none")] |
-            join("\t")
-          ' kubernetes/argocd-apps/*.yaml 2>/dev/null | while IFS=$'\t' read -r chart repo version val_file; do
-            if [ -z "$chart" ] || [ "$chart" = "---" ]; then continue; fi
-            echo "Rendering $chart ($version) from $repo"
+      - name: 3. Verify Argo application registry semantics
+        run: |
+          yq eval-all -o=json 'select(.kind == "Application")' rendered-manifests.yaml |
+            jq -s '
+              map({
+                name: .metadata.name,
+                repoURL: (.spec.source.repoURL // .spec.sources[0].repoURL // ""),
+                chart: (.spec.source.chart // .spec.sources[0].chart // ""),
+                path: (.spec.source.path // ""),
+                targetRevision: (.spec.source.targetRevision // .spec.sources[0].targetRevision // ""),
+                namespace: .spec.destination.namespace,
+                syncWave: .metadata.annotations."argocd.argoproj.io/sync-wave",
+                prune: .spec.syncPolicy.automated.prune,
+                selfHeal: .spec.syncPolicy.automated.selfHeal,
+                sourceCount: ((.spec.sources // [.spec.source]) | length),
+                finalizerCount: ((.metadata.finalizers // []) | length)
+              }) | sort_by(.name)
+            ' > /tmp/rendered-applications.json
 
-            clean_val_file=$(echo "$val_file" | sed 's|\$values/||')
+          yq -o=json '.applications | sort_by(.name)' \
+            kubernetes/argocd-apps/tests/expected-applications.yaml > /tmp/expected-applications.json
 
-            if [ "$clean_val_file" != "none" ] && [ -f "$clean_val_file" ]; then
-              helm template "$chart" "$chart" --repo "$repo" --version "$version" -f "$clean_val_file" >> rendered-manifests.yaml
-            else
-              helm template "$chart" "$chart" --repo "$repo" --version "$version" >> rendered-manifests.yaml
-            fi
-          done
+          diff -u /tmp/expected-applications.json /tmp/rendered-applications.json
 
-      - name: 3. Validate Kubernetes Manifests (Kubeconform)
+      - name: 4. Validate Kubernetes Manifests (Kubeconform)
         run: |
           kubeconform \
             -kubernetes-version 1.30.0 \
@@ -67,9 +74,9 @@ jobs:
             -ignore-missing-schemas \
             -schema-location default \
             -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
-            kubernetes/manifests/ kubernetes/argocd-apps/ rendered-manifests.yaml
+            kubernetes/manifests/ rendered-manifests.yaml
 
-      - name: 4. Scan Manifests for Misconfigurations (Trivy)
+      - name: 5. Scan Manifests for Misconfigurations (Trivy)
         uses: aquasecurity/trivy-action@master
         with:
           scan-type: 'config'
