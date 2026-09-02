@@ -16,30 +16,27 @@ resource "proxmox_virtual_environment_file" "cloud_config" {
   node_name    = var.proxmox_node
 
   source_raw {
-    data = <<-EOF
-      #cloud-config
-      ${yamlencode({
-        users = [
-          {
-            name                = "ubuntu"
-            sudo                = "ALL=(ALL) NOPASSWD:ALL"
-            groups              = "users, admin"
-            shell               = "/bin/bash"
-            ssh_authorized_keys = var.ssh_public_keys
-          }
-        ]
-        package_update = true
-        packages = [
-          "qemu-guest-agent",
-          "open-iscsi",
-          "nfs-common"
-        ]
-        runcmd = [
-          "systemctl enable --now qemu-guest-agent",
-          "systemctl enable --now iscsid"
-        ]
-      })}
-    EOF
+    data = format("#cloud-config\n%s", yamlencode({
+      users = [
+        {
+          name                = "ubuntu"
+          sudo                = "ALL=(ALL) NOPASSWD:ALL"
+          groups              = "users, admin"
+          shell               = "/bin/bash"
+          ssh_authorized_keys = var.ssh_public_keys
+        }
+      ]
+      package_update = true
+      packages = [
+        "qemu-guest-agent",
+        "open-iscsi",
+        "nfs-common"
+      ]
+      runcmd = [
+        "systemctl enable --now qemu-guest-agent",
+        "systemctl enable --now iscsid"
+      ]
+    }))
 
     file_name = "k3s-cloud-config.yaml"
   }
