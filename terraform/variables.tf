@@ -14,9 +14,14 @@ variable "proxmox_node" {
   default = "pve"
 }
 
-variable "ssh_public_key" {
-  type    = string
-  default = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI..."
+variable "ssh_public_keys" {
+  type        = list(string)
+  description = "SSH public keys authorized to access the provisioned VM"
+
+  validation {
+    condition     = length(var.ssh_public_keys) > 0 && alltrue([for key in var.ssh_public_keys : length(trimspace(key)) > 0])
+    error_message = "ssh_public_keys must contain at least one non-empty SSH public key."
+  }
 }
 
 variable "proxmox_ssh_private_key" {
