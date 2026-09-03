@@ -33,6 +33,7 @@ Non-Helm workloads remain readable templates under `templates/explicit-applicati
 - `metallb-config`
 - `cluster-issuer`
 - `unbound-dns`
+- `monikey` — the only entry here that is application (not platform) workload; see `kubernetes/manifests/monikey/README.md` for its Secret bootstrap and image-promotion steps
 
 This keeps the registry focused on the repeated Helm-release shape without hiding raw-manifest behavior behind conventions.
 

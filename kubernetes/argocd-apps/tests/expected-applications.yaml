@@ -142,3 +142,14 @@ applications:
     selfHeal: true
     sourceCount: 1
     finalizerCount: 1
+  - name: monikey
+    repoURL: https://github.com/jeysibn/homelab-gitops.git
+    chart: ""
+    path: kubernetes/manifests/monikey
+    targetRevision: main
+    namespace: monikey
+    syncWave: "4"
+    prune: true
+    selfHeal: true
+    sourceCount: 1
+    finalizerCount: 1

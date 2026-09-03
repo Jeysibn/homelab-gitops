@@ -1,0 +1,57 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker
+  namespace: monikey
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: worker
+  template:
+    metadata:
+      labels:
+        app: worker
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: worker
+          # Bump alongside api.yaml / migrate-job.yaml when promoting a new build.
+          image: ghcr.io/jeysibn/monikey-api:CHANGEME
+          command: ["node", "dist/worker.js"]
+          envFrom:
+            - configMapRef:
+                name: monikey-config
+            - secretRef:
+                name: monikey-secrets
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 250m
+              memory: 384Mi
+          # No HTTP surface — same reasoning as compose.yaml's worker service,
+          # which disables the image's inherited HTTP healthcheck.
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: receipts
+              mountPath: /data
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: receipts
+          persistentVolumeClaim:
+            claimName: monikey-receipts
+        - name: tmp
+          emptyDir: {}

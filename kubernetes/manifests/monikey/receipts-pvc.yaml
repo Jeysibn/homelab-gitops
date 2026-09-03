@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: monikey-receipts
+  namespace: monikey
+spec:
+  # RWO is fine here: this is a single-node K3s cluster (see README.md), so
+  # the api and worker Deployments' pods always land on the same node and
+  # can mount the same RWO volume concurrently. A multi-node cluster would
+  # need Longhorn RWX (or splitting api/worker onto separate PVCs).
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: longhorn
+  resources:
+    requests:
+      storage: 5Gi
