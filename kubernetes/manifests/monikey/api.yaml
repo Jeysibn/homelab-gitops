@@ -36,7 +36,7 @@ spec:
       containers:
         - name: api
           # Bump alongside migrate-job.yaml / worker.yaml when promoting a new build.
-          image: ghcr.io/jeysibn/monikey-api:CHANGEME
+          image: ghcr.io/jeysibn/monikey-api:latest
           command: ["node", "dist/server.js"]
           ports:
             - containerPort: 3000
