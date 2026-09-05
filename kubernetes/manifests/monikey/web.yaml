@@ -38,7 +38,7 @@ spec:
           type: RuntimeDefault
       initContainers:
         - name: prepare-nginx-config
-          image: ghcr.io/jeysibn/monikey-web:CHANGEME
+          image: ghcr.io/jeysibn/monikey-web:latest
           command:
             - /bin/sh
             - -c
@@ -53,7 +53,7 @@ spec:
               mountPath: /work
       containers:
         - name: web
-          image: ghcr.io/jeysibn/monikey-web:CHANGEME
+          image: ghcr.io/jeysibn/monikey-web:latest
           ports:
             - containerPort: 80
               name: http
