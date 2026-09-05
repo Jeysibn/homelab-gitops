@@ -25,7 +25,7 @@ spec:
       containers:
         - name: migrate
           # Bump alongside api.yaml / worker.yaml when promoting a new build.
-          image: ghcr.io/jeysibn/monikey-api:CHANGEME
+          image: ghcr.io/jeysibn/monikey-api:latest
           command: ["npx", "prisma", "migrate", "deploy"]
           envFrom:
             - configMapRef:
