@@ -38,7 +38,7 @@ spec:
           type: RuntimeDefault
       initContainers:
         - name: prepare-nginx-config
-          image: ghcr.io/jeysibn/monikey-web:CHANGEME
+          image: ghcr.io/jeysibn/monikey-web:latest
           command:
             - /bin/sh
             - -c
