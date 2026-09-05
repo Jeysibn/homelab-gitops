@@ -1,0 +1,115 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: web
+  namespace: monikey
+spec:
+  ports:
+    - name: http
+      port: 80
+      targetPort: 80
+  selector:
+    app: web
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+  namespace: monikey
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: web
+  template:
+    metadata:
+      labels:
+        app: web
+    spec:
+      securityContext:
+        # nginx:alpine's stock image ships an unprivileged `nginx` user
+        # (uid/gid 101). NET_BIND_SERVICE below allows it to bind :80
+        # without running the container as root.
+        runAsNonRoot: true
+        runAsUser: 101
+        runAsGroup: 101
+        fsGroup: 101
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        - name: prepare-nginx-config
+          image: ghcr.io/jeysibn/monikey-web:CHANGEME
+          command:
+            - /bin/sh
+            - -c
+            - cp /etc/nginx/conf.d/default.conf /work/default.conf
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: nginx-conf
+              mountPath: /work
+      containers:
+        - name: web
+          image: ghcr.io/jeysibn/monikey-web:CHANGEME
+          ports:
+            - containerPort: 80
+              name: http
+          env:
+            # docker/nginx.conf's resolver placeholder — in-cluster DNS
+            # resolves the `api` Service name the same way Docker's embedded
+            # DNS does in compose.yaml.
+            - name: NGINX_DNS_RESOLVER
+              value: kube-dns.kube-system.svc.cluster.local
+          resources:
+            requests:
+              cpu: 25m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 80
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 80
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+              add: ["NET_BIND_SERVICE"]
+          volumeMounts:
+            # The image's startup hook substitutes NGINX_DNS_RESOLVER into
+            # default.conf. Only this runtime config directory is writable;
+            # the image root filesystem remains immutable.
+            - name: nginx-conf
+              mountPath: /etc/nginx/conf.d
+            # nginx needs writable runtime/cache locations even when the
+            # container root filesystem is read-only.
+            - name: nginx-cache
+              mountPath: /var/cache/nginx
+            - name: nginx-run
+              mountPath: /var/run
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: nginx-conf
+          emptyDir: {}
+        - name: nginx-cache
+          emptyDir: {}
+        - name: nginx-run
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
