@@ -23,7 +23,7 @@ spec:
       containers:
         - name: worker
           # Bump alongside api.yaml / migrate-job.yaml when promoting a new build.
-          image: ghcr.io/jeysibn/monikey-api:CHANGEME
+          image: ghcr.io/jeysibn/monikey-api:latest
           command: ["node", "dist/worker.js"]
           envFrom:
             - configMapRef:
