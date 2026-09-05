@@ -1,0 +1,45 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: monikey-migrate
+  namespace: monikey
+  annotations:
+    # Runs before every sync that touches this Application, ahead of the
+    # api/worker Deployments, so a new image's Prisma migrations land before
+    # anything starts querying the new schema. HookSucceeded/HookFailed
+    # deletion lets the same Job name be recreated on the next sync instead
+    # of hitting an immutable-field conflict.
+    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/hook-delete-policy: HookSucceeded,HookFailed
+spec:
+  backoffLimit: 2
+  template:
+    spec:
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: migrate
+          # Bump alongside api.yaml / worker.yaml when promoting a new build.
+          image: ghcr.io/jeysibn/monikey-api:CHANGEME
+          command: ["npx", "prisma", "migrate", "deploy"]
+          envFrom:
+            - configMapRef:
+                name: monikey-config
+            - secretRef:
+                name: monikey-secrets
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}

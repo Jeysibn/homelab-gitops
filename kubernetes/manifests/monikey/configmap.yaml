@@ -1,0 +1,47 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: monikey-config
+  namespace: monikey
+data:
+  # Non-secret application config. Secrets (DATABASE_URL, POSTGRES_PASSWORD,
+  # ENCRYPTION_SECRET, and any live-provider API keys) live in the
+  # `monikey-secrets` Secret created out-of-band — see README.md.
+  NODE_ENV: "production"
+  API_PORT: "3000"
+  APP_ORIGIN: "https://monikey.homelab.local"
+  APP_TIMEZONE: "Asia/Manila"
+  SESSION_SECURE: "true"
+  SESSION_TTL_DAYS: "30"
+  LOG_LEVEL: "info"
+  ALLOW_TEST_CLOCK: "false"
+
+  # Integrations — Phase 1 default: everything stubbed. Flip individual
+  # *_PROVIDER values to a live provider and add the matching API key to
+  # `monikey-secrets` when you're ready to enable it.
+  INTEGRATIONS_MODE: "stub"
+  QUOTE_PROVIDER: "stub"
+  FX_PROVIDER: "stub"
+  EMAIL_PROVIDER: "stub"
+  OCR_PROVIDER: "stub"
+  AI_PROVIDER: "stub"
+  BANK_PROVIDER: "stub"
+  PLAID_ENV: "sandbox"
+
+  ALPHA_VANTAGE_URL: "https://www.alphavantage.co/query"
+  ALPHA_VANTAGE_MAX_CALLS_PER_DAY: "20"
+  COINGECKO_URL: "https://api.coingecko.com/api/v3/simple/price"
+  COINGECKO_MAX_CALLS_PER_MONTH: "9000"
+  FRANKFURTER_BASE_URL: "https://api.frankfurter.dev"
+  FRANKFURTER_MAX_CALLS_PER_DAY: "100"
+  EMAIL_FROM: "monikey@homelab.local"
+  OCRSPACE_MAX_CALLS_PER_DAY: "450"
+  OCRSPACE_MAX_CALLS_PER_MONTH: "20000"
+  GEMINI_MODEL: "gemini-2.0-flash"
+  GEMINI_MAX_CALLS_PER_DAY: "50"
+  GEMINI_MAX_CALLS_PER_MONTH: "1000"
+  IMPORT_MAX_TRANSACTIONS_PER_BATCH: "10000"
+  IMPORT_MAX_CSV_FILESIZE_BYTES: "5242880"
+
+  OBJECT_STORE: "filesystem"
+  RECEIPT_STORAGE_PATH: "/data/receipts"
