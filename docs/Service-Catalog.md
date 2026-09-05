@@ -18,6 +18,7 @@ This catalog documents how core homelab services are exposed inside the cluster 
 | Pi-hole Web UI | `dns` | Traefik Ingress | `pihole.homelab.local` | Web UI only; DNS traffic stays on `192.168.86.201` |
 | Longhorn UI | `longhorn-system` | Traefik Ingress | `longhorn.homelab.local` | Storage administration UI |
 | Prometheus | `monitoring` | Traefik Ingress | `prometheus.homelab.local` | Metrics backend; consider restricting later |
+| Monikey | `monikey` | Traefik Ingress | `monikey.homelab.local` | Personal finance app; Nginx `web` proxies `/api` to the `api` Service |
 
 ## Internal-only services
 
@@ -27,6 +28,8 @@ This catalog documents how core homelab services are exposed inside the cluster 
 | Alloy | `monitoring` | Internal workload | Collects Kubernetes pod logs and forwards them to Loki |
 | cert-manager | `cert-manager` | Internal controllers/webhook | Manages local TLS resources |
 | MetalLB | `metallb-system` | Internal controllers/speakers | Allocates LAN LoadBalancer IPs |
+| Monikey `api` / `worker` | `monikey` | ClusterIP / internal | `worker` runs background jobs only, no Service |
+| Monikey `postgres` | `monikey` | ClusterIP (headless) | Longhorn-backed, single-node StatefulSet |
 
 ## DNS model
 
@@ -53,4 +56,5 @@ nslookup grafana.homelab.local 192.168.86.201
 nslookup pihole.homelab.local 192.168.86.201
 nslookup longhorn.homelab.local 192.168.86.201
 nslookup prometheus.homelab.local 192.168.86.201
+nslookup monikey.homelab.local 192.168.86.201
 ```

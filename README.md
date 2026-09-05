@@ -77,6 +77,7 @@ Expected core routes:
 | Pi-hole Web UI | `pihole.homelab.local` |
 | Longhorn UI | `longhorn.homelab.local` |
 | Prometheus | `prometheus.homelab.local` |
+| Monikey | `monikey.homelab.local` |
 
 ## 🔐 Secrets Status
 
