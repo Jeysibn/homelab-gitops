@@ -13,11 +13,11 @@ A GitOps-driven local Kubernetes homelab. This repository is the source of truth
 
 * **Infrastructure:** Proxmox VM provisioned with Terraform.
 * **Cluster Engine:** K3s lightweight Kubernetes.
-* **Bootstrap Networking:** Calico CNI is installed and owned exclusively by the K3s bootstrap scripts, with pod CIDR `10.42.0.0/16`.
-* **GitOps Controller:** Argo CD App-of-Apps with sync waves. Argo starts only after Calico and in-cluster DNS pass bootstrap health checks.
+* **Bootstrap Networking:** Calico CNI is installed and owned exclusively by bootstrap, with pod CIDR `10.42.0.0/16`, Service CIDR `10.43.0.0/16`, and CoreDNS Service IP `10.43.0.10`.
+* **GitOps Controller:** Argo CD App-of-Apps with sync waves. Argo starts only after pod routing, ClusterIP routing, CoreDNS service routing, Kubernetes service discovery, and external GitHub DNS all pass a network acceptance test.
 * **Ingress & Load Balancing:** MetalLB LoadBalancer IPAM and Traefik ingress.
 * **TLS:** cert-manager with local self-signed issuer by default. Public Let’s Encrypt requires a real DNS domain and reachable HTTP-01 or DNS-01 validation.
-* **DNS & Routing:** Pi-hole for LAN DNS/ad-blocking and Unbound for recursive upstream DNS.
+* **DNS & Routing:** Pi-hole for LAN DNS/ad-blocking and Unbound for recursive upstream DNS. Kubernetes CoreDNS uses the stock K3s Corefile and the node's real resolver file; bootstrap does not inject a second `forward .` override.
 * **Storage:** Longhorn CSI. Current setup is single-node with one replica; HA requires additional nodes/disks.
 * **Observability:** Prometheus metrics, Loki logs, Grafana dashboards, and Alloy log collection.
 * **Remote Access:** Tailscale for CI or remote homelab access.
@@ -54,7 +54,19 @@ Use this flow for a new node or disaster recovery rebuild.
    ./kubernetes/bootstrap/install-k3s.sh
    ```
 
-   The script refuses to continue if the K3s and Calico pod CIDRs differ, if incompatible pre-existing Calico IPPools/IPAM blocks are detected, or if CoreDNS cannot resolve both Kubernetes service DNS and `github.com` from a pod.
+   Bootstrap refuses to complete unless all of the following are true:
+
+   - K3s and Calico both use pod CIDR `10.42.0.0/16`.
+   - K3s uses Service CIDR `10.43.0.0/16` and CoreDNS `10.43.0.10`.
+   - Pod and Service CIDRs do not overlap.
+   - No active legacy Calico IPPool/IPAM block exists outside `10.42.0.0/16`.
+   - The host is not running an unconfigured UFW/firewalld policy.
+   - K3s uses a real resolver file rather than the systemd-resolved `127.0.0.53` stub.
+   - pod → pod traffic works.
+   - pod → ClusterIP traffic works.
+   - pod → CoreDNS endpoint and pod → CoreDNS Service traffic work.
+   - Kubernetes service discovery works.
+   - `github.com` resolves from a pod through CoreDNS.
 
 3. Install the pinned Argo CD release and apply the root application:
 
@@ -62,7 +74,7 @@ Use this flow for a new node or disaster recovery rebuild.
    ./kubernetes/bootstrap/install-argocd.sh
    ```
 
-   The script waits for the Argo controller/repo-server and requires `root-app` to reach `Synced` before reporting success.
+   Argo CD reruns the same network acceptance test before installation, verifies `argocd-repo-server` can resolve GitHub, and requires `root-app` to reach `Synced` before reporting success.
 
 4. Verify Argo CD and cluster services:
 
@@ -72,6 +84,12 @@ Use this flow for a new node or disaster recovery rebuild.
    kubectl get app -n argocd
    kubectl get svc -A | grep LoadBalancer
    ```
+
+The acceptance test can also be run independently:
+
+```bash
+bash ./kubernetes/bootstrap/verify-cluster-network.sh
+```
 
 If an older cluster contains Calico allocations outside `10.42.0.0/16`, inspect them separately with:
 
