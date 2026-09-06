@@ -5,6 +5,12 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 ARGOCD_VERSION="v3.5.1"
 ROOT_APP="$SCRIPT_DIR/root-app.yaml"
 
+if (( EUID == 0 )); then
+  echo "ERROR: Run this script as your normal user, not with sudo." >&2
+  echo "Use: bash $SCRIPT_DIR/install-argocd.sh" >&2
+  exit 1
+fi
+
 command -v kubectl >/dev/null 2>&1 || {
   echo "ERROR: kubectl is not available. Install K3s first." >&2
   exit 1
@@ -15,6 +21,12 @@ command -v kubectl >/dev/null 2>&1 || {
   exit 1
 }
 
+kubectl get --raw=/readyz >/dev/null 2>&1 || {
+  echo "ERROR: Kubernetes API is not reachable with the current kubeconfig." >&2
+  exit 1
+}
+
+echo "==> Bootstrap directory: $SCRIPT_DIR"
 echo "==> Creating Argo CD namespace..."
 kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
 
@@ -35,8 +47,6 @@ kubectl wait --for=condition=Ready pod \
 echo "==> Applying root application..."
 kubectl apply -f "$ROOT_APP"
 
-echo
-kubectl get pods -n argocd
 kubectl get applications -n argocd
 
-echo "==> Argo CD bootstrap complete!"
+echo "==> Argo CD bootstrap complete"
