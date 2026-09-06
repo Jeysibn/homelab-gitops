@@ -3,6 +3,8 @@ kind: Service
 metadata:
   name: web
   namespace: monikey
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
 spec:
   ports:
     - name: http
@@ -16,6 +18,8 @@ kind: Deployment
 metadata:
   name: web
   namespace: monikey
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
 spec:
   replicas: 1
   selector:
@@ -27,9 +31,6 @@ spec:
         app: web
     spec:
       securityContext:
-        # nginx:alpine's stock image ships an unprivileged `nginx` user
-        # (uid/gid 101). NET_BIND_SERVICE below allows it to bind :80
-        # without running the container as root.
         runAsNonRoot: true
         runAsUser: 101
         runAsGroup: 101
@@ -58,9 +59,6 @@ spec:
             - containerPort: 80
               name: http
           env:
-            # docker/nginx.conf's resolver placeholder — in-cluster DNS
-            # resolves the `api` Service name the same way Docker's embedded
-            # DNS does in compose.yaml.
             - name: NGINX_DNS_RESOLVER
               value: kube-dns.kube-system.svc.cluster.local
           resources:
@@ -91,13 +89,8 @@ spec:
               drop: ["ALL"]
               add: ["NET_BIND_SERVICE"]
           volumeMounts:
-            # The image's startup hook substitutes NGINX_DNS_RESOLVER into
-            # default.conf. Only this runtime config directory is writable;
-            # the image root filesystem remains immutable.
             - name: nginx-conf
               mountPath: /etc/nginx/conf.d
-            # nginx needs writable runtime/cache locations even when the
-            # container root filesystem is read-only.
             - name: nginx-cache
               mountPath: /var/cache/nginx
             - name: nginx-run
