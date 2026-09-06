@@ -3,6 +3,8 @@ kind: Service
 metadata:
   name: api
   namespace: monikey
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
 spec:
   ports:
     - name: http
@@ -16,6 +18,8 @@ kind: Deployment
 metadata:
   name: api
   namespace: monikey
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
 spec:
   replicas: 1
   selector:
@@ -35,7 +39,6 @@ spec:
           type: RuntimeDefault
       containers:
         - name: api
-          # Bump alongside migrate-job.yaml / worker.yaml when promoting a new build.
           image: ghcr.io/jeysibn/monikey-api:latest
           command: ["node", "dist/server.js"]
           ports:
