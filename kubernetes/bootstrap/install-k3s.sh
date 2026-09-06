@@ -39,6 +39,43 @@ show_tigera_diagnostics() {
   kubectl logs -n tigera-operator deployment/tigera-operator --tail=100 >&2 || true
 }
 
+find_pods_outside_cluster_cidr() {
+  local cidr="$1"
+
+  command -v python3 >/dev/null 2>&1 || {
+    echo "ERROR: python3 is required for pod CIDR validation." >&2
+    return 1
+  }
+
+  kubectl get pods -A -o json | python3 -c '
+import ipaddress, json, sys
+net = ipaddress.ip_network(sys.argv[1])
+data = json.load(sys.stdin)
+for pod in data.get("items", []):
+    spec = pod.get("spec", {})
+    status = pod.get("status", {})
+    if spec.get("hostNetwork"):
+        continue
+    if status.get("phase") in ("Succeeded", "Failed"):
+        continue
+    ip = status.get("podIP")
+    if not ip:
+        continue
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        continue
+    if addr.version == net.version and addr not in net:
+        meta = pod.get("metadata", {})
+        print("\t".join([
+            meta.get("namespace", "default"),
+            meta.get("name", ""),
+            ip,
+            spec.get("nodeName", "")
+        ]))
+' "$cidr"
+}
+
 echo "==> Installing K3s ${K3S_VERSION} (Disabling default Flannel, Traefik, ServiceLB, Local Storage)..."
 curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION="${K3S_VERSION}" sh -s - server \
   --cluster-cidr="${CLUSTER_CIDR}" \
@@ -141,5 +178,19 @@ kubectl rollout status deployment/calico-kube-controllers -n calico-system --tim
 
 echo "==> Waiting for the K3s node to report Ready..."
 kubectl wait --for=condition=Ready node --all --timeout=300s
+
+echo "==> Verifying active pod addresses are inside ${CLUSTER_CIDR}..."
+OUTSIDE_PODS="$(find_pods_outside_cluster_cidr "$CLUSTER_CIDR")"
+if [[ -n "$OUTSIDE_PODS" ]]; then
+  echo "ERROR: Active pods still have addresses outside ${CLUSTER_CIDR}." >&2
+  echo "       This usually means stale Calico IPAM state survived a CIDR migration." >&2
+  printf 'NAMESPACE\tPOD\tIP\tNODE\n%s\n' "$OUTSIDE_PODS" >&2
+  echo >&2
+  echo "Run the recovery tool in plan mode first:" >&2
+  echo "  $REPO_ROOT/kubernetes/bootstrap/recover-calico-ipam.sh --plan" >&2
+  echo "Then, after reviewing the detected stale block:" >&2
+  echo "  $REPO_ROOT/kubernetes/bootstrap/recover-calico-ipam.sh --apply" >&2
+  exit 1
+fi
 
 echo "==> K3s + Calico Bootstrap Complete!"
