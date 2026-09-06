@@ -13,6 +13,7 @@ CLUSTER_DNS_IP="10.43.0.10"
 EXPECTED_OPERATOR_IMAGE="quay.io/tigera/operator:${TIGERA_OPERATOR_VERSION}"
 CALICO_INSTALLATION_FILE="$REPO_ROOT/kubernetes/bootstrap/calico-installation.yaml"
 RECOVERY_SCRIPT="$REPO_ROOT/kubernetes/bootstrap/recover-calico-ipam.sh"
+NETWORK_VERIFY_SCRIPT="$REPO_ROOT/kubernetes/bootstrap/verify-cluster-network.sh"
 
 wait_for_resource() {
   local resource="$1"
@@ -22,13 +23,10 @@ wait_for_resource() {
 
   while (( SECONDS < deadline )); do
     if [[ -n "$namespace" ]]; then
-      if kubectl get "$resource" -n "$namespace" >/dev/null 2>&1; then
-        return 0
-      fi
-    elif kubectl get "$resource" >/dev/null 2>&1; then
-      return 0
+      kubectl get "$resource" -n "$namespace" >/dev/null 2>&1 && return 0
+    else
+      kubectl get "$resource" >/dev/null 2>&1 && return 0
     fi
-
     sleep 2
   done
 
@@ -45,7 +43,6 @@ show_tigera_diagnostics() {
 
 find_pods_outside_cluster_cidr() {
   local cidr="$1"
-
   kubectl get pods -A -o json | python3 -c '
 import ipaddress, json, sys
 net = ipaddress.ip_network(sys.argv[1])
@@ -53,9 +50,7 @@ data = json.load(sys.stdin)
 for pod in data.get("items", []):
     spec = pod.get("spec", {})
     status = pod.get("status", {})
-    if spec.get("hostNetwork"):
-        continue
-    if status.get("phase") in ("Succeeded", "Failed"):
+    if spec.get("hostNetwork") or status.get("phase") in ("Succeeded", "Failed"):
         continue
     ip = status.get("podIP")
     if not ip:
@@ -66,18 +61,12 @@ for pod in data.get("items", []):
         continue
     if addr.version == net.version and addr not in net:
         meta = pod.get("metadata", {})
-        print("\t".join([
-            meta.get("namespace", "default"),
-            meta.get("name", ""),
-            ip,
-            spec.get("nodeName", "")
-        ]))
+        print("\t".join([meta.get("namespace", "default"), meta.get("name", ""), ip, spec.get("nodeName", "")]))
 ' "$cidr"
 }
 
 find_enabled_ippools_outside_cluster_cidr() {
   local cidr="$1"
-
   kubectl get ippools.crd.projectcalico.org -o json 2>/dev/null | python3 -c '
 import ipaddress, json, sys
 expected = ipaddress.ip_network(sys.argv[1])
@@ -100,7 +89,6 @@ for item in data.get("items", []):
 
 find_ipam_blocks_outside_cluster_cidr() {
   local cidr="$1"
-
   kubectl get ipamblocks.crd.projectcalico.org -o json 2>/dev/null | python3 -c '
 import ipaddress, json, sys
 expected = ipaddress.ip_network(sys.argv[1])
@@ -118,44 +106,92 @@ for item in data.get("items", []):
 ' "$cidr"
 }
 
-command -v python3 >/dev/null 2>&1 || {
-  echo "ERROR: python3 is required for bootstrap network validation." >&2
+choose_resolv_conf() {
+  if [[ -n "${K3S_RESOLV_CONF:-}" ]]; then
+    printf '%s\n' "$K3S_RESOLV_CONF"
+    return
+  fi
+
+  if [[ -r /run/systemd/resolve/resolv.conf ]] && \
+     grep -Eq '^nameserver[[:space:]]+[^[:space:]]+' /run/systemd/resolve/resolv.conf; then
+    printf '%s\n' /run/systemd/resolve/resolv.conf
+  else
+    printf '%s\n' /etc/resolv.conf
+  fi
+}
+
+for cmd in curl kubectl python3 sudo; do
+  command -v "$cmd" >/dev/null 2>&1 || {
+    echo "ERROR: required command not found: $cmd" >&2
+    exit 1
+  }
+done
+
+[[ -f "$NETWORK_VERIFY_SCRIPT" ]] || {
+  echo "ERROR: missing network acceptance script: $NETWORK_VERIFY_SCRIPT" >&2
   exit 1
 }
 
 CONFIGURED_CALICO_CIDR="$(awk '$1 == "cidr:" {print $2; exit}' "$CALICO_INSTALLATION_FILE")"
-if [[ -z "$CONFIGURED_CALICO_CIDR" || "$CONFIGURED_CALICO_CIDR" != "$CLUSTER_CIDR" ]]; then
-  echo "ERROR: K3s and Calico pod CIDRs do not match in the repository." >&2
-  echo "       K3s CLUSTER_CIDR: ${CLUSTER_CIDR}" >&2
-  echo "       Calico IPPool:    ${CONFIGURED_CALICO_CIDR:-<missing>}" >&2
-  echo "Refusing to install a cluster with inconsistent pod networking." >&2
+if [[ "$CONFIGURED_CALICO_CIDR" != "$CLUSTER_CIDR" ]]; then
+  echo "ERROR: K3s pod CIDR ${CLUSTER_CIDR} does not match Calico ${CONFIGURED_CALICO_CIDR:-<missing>}." >&2
   exit 1
 fi
 
-if ! python3 - "$SERVICE_CIDR" "$CLUSTER_DNS_IP" <<'PY'
+python3 - "$CLUSTER_CIDR" "$SERVICE_CIDR" "$CLUSTER_DNS_IP" <<'PY'
 import ipaddress
 import sys
-
-service_cidr = ipaddress.ip_network(sys.argv[1])
-dns_ip = ipaddress.ip_address(sys.argv[2])
-if dns_ip not in service_cidr:
-    raise SystemExit(1)
+pod = ipaddress.ip_network(sys.argv[1])
+svc = ipaddress.ip_network(sys.argv[2])
+dns = ipaddress.ip_address(sys.argv[3])
+if pod.overlaps(svc):
+    raise SystemExit(f"pod CIDR {pod} overlaps service CIDR {svc}")
+if dns not in svc:
+    raise SystemExit(f"cluster DNS {dns} is outside service CIDR {svc}")
 PY
-then
-  echo "ERROR: CLUSTER_DNS_IP ${CLUSTER_DNS_IP} is outside SERVICE_CIDR ${SERVICE_CIDR}." >&2
+
+if command -v ufw >/dev/null 2>&1 && sudo ufw status 2>/dev/null | grep -q '^Status: active'; then
+  echo "ERROR: UFW is active. A host firewall can silently break K3s/Calico pod and Service traffic." >&2
+  echo "Disable it for this homelab node or explicitly configure all K3s/Calico rules before bootstrap." >&2
+  exit 1
+fi
+if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet firewalld 2>/dev/null; then
+  echo "ERROR: firewalld is active. Configure or disable it before K3s bootstrap." >&2
   exit 1
 fi
 
-echo "==> Repository network invariants verified"
-echo "    Pod CIDR:     ${CLUSTER_CIDR}"
-echo "    Service CIDR: ${SERVICE_CIDR}"
-echo "    Cluster DNS:  ${CLUSTER_DNS_IP}"
+RESOLV_CONF="$(choose_resolv_conf)"
+[[ -r "$RESOLV_CONF" ]] || {
+  echo "ERROR: resolver file is not readable: $RESOLV_CONF" >&2
+  exit 1
+}
+if grep -Eq '^nameserver[[:space:]]+127\.(0\.0\.1|0\.0\.53)([[:space:]]|$)' "$RESOLV_CONF"; then
+  echo "ERROR: resolver file $RESOLV_CONF points at a loopback DNS stub." >&2
+  echo "Set K3S_RESOLV_CONF to a resolver file containing the real LAN/upstream DNS servers." >&2
+  exit 1
+fi
 
-echo "==> Installing K3s ${K3S_VERSION} (Disabling default Flannel, Traefik, ServiceLB, Local Storage)..."
+echo "==> Preparing host networking prerequisites..."
+sudo modprobe br_netfilter
+cat <<'EOF' | sudo tee /etc/sysctl.d/99-k3s-calico-network.conf >/dev/null
+net.ipv4.ip_forward = 1
+net.bridge.bridge-nf-call-iptables = 1
+net.bridge.bridge-nf-call-ip6tables = 1
+EOF
+sudo sysctl --system >/dev/null
+
+echo "==> Repository network invariants verified"
+echo "    Pod CIDR:      ${CLUSTER_CIDR}"
+echo "    Service CIDR:  ${SERVICE_CIDR}"
+echo "    Cluster DNS:   ${CLUSTER_DNS_IP}"
+echo "    Upstream DNS:  ${RESOLV_CONF}"
+
+echo "==> Installing K3s ${K3S_VERSION} with explicit pod/service/DNS networking..."
 curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION="${K3S_VERSION}" sh -s - server \
   --cluster-cidr="${CLUSTER_CIDR}" \
   --service-cidr="${SERVICE_CIDR}" \
   --cluster-dns="${CLUSTER_DNS_IP}" \
+  --resolv-conf="${RESOLV_CONF}" \
   --flannel-backend=none \
   --disable-network-policy \
   --disable=servicelb \
@@ -170,46 +206,36 @@ export KUBECONFIG="$HOME/.kube/config"
 
 echo "==> Waiting for Kubernetes API..."
 for attempt in {1..60}; do
-  if kubectl version --request-timeout=5s >/dev/null 2>&1; then
-    break
-  fi
-
+  kubectl version --request-timeout=5s >/dev/null 2>&1 && break
   if [[ "$attempt" -eq 60 ]]; then
     echo "ERROR: Kubernetes API did not become reachable in time." >&2
     exit 1
   fi
-
   sleep 2
 done
 
-echo "==> Configuring CoreDNS upstream resolvers..."
-kubectl apply -f "$REPO_ROOT/kubernetes/bootstrap/coredns-custom.yaml"
+# K3s already ships a CoreDNS Corefile with `forward . /etc/resolv.conf`.
+# Do not inject a second `forward .` through coredns-custom *.override files.
+# Delete the legacy repo-created ConfigMap on reruns so the bootstrap contract
+# is deterministic and CoreDNS uses only the K3s-managed Corefile.
+echo "==> Enforcing stock K3s CoreDNS configuration..."
+kubectl delete configmap coredns-custom -n kube-system --ignore-not-found >/dev/null
 
 CURRENT_OPERATOR_IMAGE="$(kubectl -n tigera-operator get deployment tigera-operator \
-  -o jsonpath='{.spec.template.spec.containers[?(@.name=="tigera-operator")].image}' \
-  2>/dev/null || true)"
-
+  -o jsonpath='{.spec.template.spec.containers[?(@.name=="tigera-operator")].image}' 2>/dev/null || true)"
 if [[ -n "$CURRENT_OPERATOR_IMAGE" ]]; then
   echo "==> Existing Tigera operator detected: ${CURRENT_OPERATOR_IMAGE}"
-  if [[ "$CURRENT_OPERATOR_IMAGE" != "$EXPECTED_OPERATOR_IMAGE" ]]; then
-    echo "==> Upgrading stale Tigera operator to ${EXPECTED_OPERATOR_IMAGE}..."
-  fi
 fi
 
 echo "==> Deploying Calico ${CALICO_VERSION} operator (${TIGERA_OPERATOR_VERSION})..."
-# Bootstrap is the sole owner of Calico. Argo CD intentionally does not manage
-# the Tigera operator or Installation because Argo itself depends on a working
-# CNI. Calico v3.32 manages its CRDs from the operator process.
 kubectl apply --server-side --force-conflicts \
   -f "https://raw.githubusercontent.com/projectcalico/calico/${CALICO_VERSION}/manifests/tigera-operator.yaml"
 
-echo "==> Waiting for Tigera operator deployment to be created..."
 if ! wait_for_resource deployment/tigera-operator tigera-operator 60; then
   show_tigera_diagnostics
   exit 1
 fi
 
-echo "==> Waiting for Calico CRDs to be created by the operator..."
 for crd in installations.operator.tigera.io apiservers.operator.tigera.io; do
   if ! wait_for_resource "crd/${crd}" "" 180; then
     show_tigera_diagnostics
@@ -218,7 +244,6 @@ for crd in installations.operator.tigera.io apiservers.operator.tigera.io; do
   kubectl wait --for=condition=Established "crd/${crd}" --timeout=180s
 done
 
-echo "==> Waiting for Tigera operator rollout..."
 if ! kubectl rollout status deployment/tigera-operator -n tigera-operator --timeout=300s; then
   show_tigera_diagnostics
   exit 1
@@ -226,103 +251,60 @@ fi
 
 ACTUAL_OPERATOR_IMAGE="$(kubectl -n tigera-operator get deployment tigera-operator \
   -o jsonpath='{.spec.template.spec.containers[?(@.name=="tigera-operator")].image}')"
-
 if [[ "$ACTUAL_OPERATOR_IMAGE" != "$EXPECTED_OPERATOR_IMAGE" ]]; then
-  echo "ERROR: Tigera operator version mismatch." >&2
-  echo "       Expected: ${EXPECTED_OPERATOR_IMAGE}" >&2
-  echo "       Actual:   ${ACTUAL_OPERATOR_IMAGE}" >&2
+  echo "ERROR: Tigera operator version mismatch. Expected ${EXPECTED_OPERATOR_IMAGE}, got ${ACTUAL_OPERATOR_IMAGE}." >&2
   exit 1
 fi
 
-echo "==> Tigera operator is running the expected image: ${ACTUAL_OPERATOR_IMAGE}"
-
-echo "==> Checking for pre-existing Calico state outside ${CLUSTER_CIDR}..."
+echo "==> Checking for incompatible pre-existing Calico state..."
 MISMATCHED_POOLS="$(find_enabled_ippools_outside_cluster_cidr "$CLUSTER_CIDR" || true)"
 STALE_BLOCKS="$(find_ipam_blocks_outside_cluster_cidr "$CLUSTER_CIDR" || true)"
 if [[ -n "$MISMATCHED_POOLS" || -n "$STALE_BLOCKS" ]]; then
-  echo "ERROR: Existing Calico state is incompatible with the configured K3s pod CIDR." >&2
-  if [[ -n "$MISMATCHED_POOLS" ]]; then
-    echo "Enabled IPPools outside ${CLUSTER_CIDR}:" >&2
-    printf 'NAME\tCIDR\n%s\n' "$MISMATCHED_POOLS" >&2
-  fi
-  if [[ -n "$STALE_BLOCKS" ]]; then
-    echo "IPAM blocks outside ${CLUSTER_CIDR}:" >&2
-    printf 'NAME\tCIDR\n%s\n' "$STALE_BLOCKS" >&2
-  fi
-  echo >&2
-  echo "Bootstrap will not mutate or mix incompatible IPAM state." >&2
-  echo "Inspect it first with:" >&2
+  echo "ERROR: Existing Calico IPAM state is outside ${CLUSTER_CIDR}." >&2
+  [[ -z "$MISMATCHED_POOLS" ]] || printf 'IPPools:\nNAME\tCIDR\n%s\n' "$MISMATCHED_POOLS" >&2
+  [[ -z "$STALE_BLOCKS" ]] || printf 'IPAMBlocks:\nNAME\tCIDR\n%s\n' "$STALE_BLOCKS" >&2
+  echo "Bootstrap refuses to mix incompatible IPAM state. Inspect with:" >&2
   echo "  bash $RECOVERY_SCRIPT --plan" >&2
   exit 1
 fi
 
-echo "==> Applying repo-managed Calico installation configuration..."
+echo "==> Applying repo-managed Calico installation..."
 kubectl apply -f "$CALICO_INSTALLATION_FILE"
 
-echo "==> Waiting for Calico workloads to be created..."
 for resource in daemonset/calico-node deployment/calico-kube-controllers; do
   if ! wait_for_resource "$resource" calico-system 300; then
-    echo "==> Calico diagnostics" >&2
     kubectl get pods -n calico-system -o wide >&2 || true
     kubectl get tigerastatus >&2 || true
     exit 1
   fi
 done
 
-echo "==> Waiting for Calico networking to become ready..."
 kubectl rollout status daemonset/calico-node -n calico-system --timeout=300s
 kubectl rollout status deployment/calico-kube-controllers -n calico-system --timeout=300s
-
-echo "==> Waiting for the K3s node to report Ready..."
 kubectl wait --for=condition=Ready node --all --timeout=300s
 
-echo "==> Verifying active pod addresses are inside ${CLUSTER_CIDR}..."
 OUTSIDE_PODS="$(find_pods_outside_cluster_cidr "$CLUSTER_CIDR")"
 if [[ -n "$OUTSIDE_PODS" ]]; then
-  echo "ERROR: Active pods still have addresses outside ${CLUSTER_CIDR}." >&2
-  echo "       This usually means stale Calico IPAM state survived a CIDR migration." >&2
+  echo "ERROR: active pods have addresses outside ${CLUSTER_CIDR}:" >&2
   printf 'NAMESPACE\tPOD\tIP\tNODE\n%s\n' "$OUTSIDE_PODS" >&2
-  echo >&2
-  echo "Run the recovery tool in plan mode first:" >&2
-  echo "  bash $RECOVERY_SCRIPT --plan" >&2
   exit 1
 fi
 
-echo "==> Waiting for CoreDNS to be ready..."
+# Force CoreDNS to restart after Calico is healthy so it receives a valid pod
+# address and runs without any legacy custom override mounted.
+echo "==> Restarting CoreDNS on the verified Calico network..."
+kubectl rollout restart deployment/coredns -n kube-system
 kubectl rollout status deployment/coredns -n kube-system --timeout=180s
-ACTUAL_CLUSTER_DNS_IP="$(kubectl get service kube-dns -n kube-system -o jsonpath='{.spec.clusterIP}')"
-if [[ -z "$ACTUAL_CLUSTER_DNS_IP" ]]; then
-  echo "ERROR: kube-dns Service has no ClusterIP." >&2
-  exit 1
-fi
-if [[ "$ACTUAL_CLUSTER_DNS_IP" != "$CLUSTER_DNS_IP" ]]; then
-  echo "ERROR: kube-dns Service IP does not match the bootstrap contract." >&2
-  echo "       Expected: ${CLUSTER_DNS_IP}" >&2
-  echo "       Actual:   ${ACTUAL_CLUSTER_DNS_IP}" >&2
-  exit 1
-fi
-
-echo "==> Verifying pod DNS through ${CLUSTER_DNS_IP}..."
-kubectl delete pod k3s-bootstrap-dns-test -n default --ignore-not-found >/dev/null 2>&1 || true
-kubectl run k3s-bootstrap-dns-test -n default \
-  --image=busybox:1.36 \
-  --restart=Never \
-  --env="DNS_SERVER=${CLUSTER_DNS_IP}" \
-  --command -- sh -c \
-  'nslookup kubernetes.default.svc.cluster.local "$DNS_SERVER" && nslookup github.com "$DNS_SERVER"'
-
-if ! kubectl wait -n default pod/k3s-bootstrap-dns-test \
-  --for=jsonpath='{.status.phase}'=Succeeded --timeout=120s; then
-  echo "ERROR: in-cluster DNS smoke test failed." >&2
-  kubectl logs -n default k3s-bootstrap-dns-test >&2 || true
-  kubectl describe pod -n default k3s-bootstrap-dns-test >&2 || true
-  exit 1
-fi
-kubectl logs -n default k3s-bootstrap-dns-test
-kubectl delete pod -n default k3s-bootstrap-dns-test --wait=false >/dev/null
 
 echo "==> Verifying final Calico IPPool configuration..."
 kubectl get ippools.crd.projectcalico.org \
   -o custom-columns='NAME:.metadata.name,CIDR:.spec.cidr,DISABLED:.spec.disabled'
 
+echo "==> Running mandatory cluster network acceptance test..."
+CLUSTER_CIDR="$CLUSTER_CIDR" \
+SERVICE_CIDR="$SERVICE_CIDR" \
+CLUSTER_DNS_IP="$CLUSTER_DNS_IP" \
+  bash "$NETWORK_VERIFY_SCRIPT"
+
 echo "==> K3s + Calico Bootstrap Complete!"
+echo "    Pod routing, ClusterIP routing, service discovery, and external GitOps DNS all passed."
