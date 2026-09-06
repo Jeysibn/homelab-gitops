@@ -15,7 +15,7 @@ applications:
   - name: calico-operator
     repository: https://docs.tigera.io/calico/charts
     chart: tigera-operator
-    targetRevision: v3.28.0
+    targetRevision: v3.32.1
     valuesFile: kubernetes/helm/calico-operator/values.yaml
     namespace: tigera-operator
     syncWave: 1

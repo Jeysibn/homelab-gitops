@@ -3,7 +3,7 @@ applications:
     repoURL: https://docs.tigera.io/calico/charts
     chart: tigera-operator
     path: ""
-    targetRevision: v3.28.0
+    targetRevision: v3.32.1
     namespace: tigera-operator
     syncWave: "1"
     prune: false
