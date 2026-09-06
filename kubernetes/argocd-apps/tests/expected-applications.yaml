@@ -1,15 +1,4 @@
 applications:
-  - name: calico-operator
-    repoURL: https://docs.tigera.io/calico/charts
-    chart: tigera-operator
-    path: ""
-    targetRevision: v3.32.1
-    namespace: tigera-operator
-    syncWave: "1"
-    prune: false
-    selfHeal: true
-    sourceCount: 2
-    finalizerCount: 0
   - name: longhorn
     repoURL: https://charts.longhorn.io
     chart: longhorn
