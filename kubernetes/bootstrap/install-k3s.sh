@@ -8,6 +8,8 @@ K3S_VERSION="v1.36.3+k3s1"
 CALICO_VERSION="v3.32.1"
 TIGERA_OPERATOR_VERSION="v1.42.3"
 CLUSTER_CIDR="10.42.0.0/16"
+SERVICE_CIDR="10.43.0.0/16"
+CLUSTER_DNS_IP="10.43.0.10"
 EXPECTED_OPERATOR_IMAGE="quay.io/tigera/operator:${TIGERA_OPERATOR_VERSION}"
 CALICO_INSTALLATION_FILE="$REPO_ROOT/kubernetes/bootstrap/calico-installation.yaml"
 RECOVERY_SCRIPT="$REPO_ROOT/kubernetes/bootstrap/recover-calico-ipam.sh"
@@ -130,11 +132,30 @@ if [[ -z "$CONFIGURED_CALICO_CIDR" || "$CONFIGURED_CALICO_CIDR" != "$CLUSTER_CID
   exit 1
 fi
 
-echo "==> Repository network invariant verified: K3s and Calico both use ${CLUSTER_CIDR}"
+if ! python3 - "$SERVICE_CIDR" "$CLUSTER_DNS_IP" <<'PY'
+import ipaddress
+import sys
+
+service_cidr = ipaddress.ip_network(sys.argv[1])
+dns_ip = ipaddress.ip_address(sys.argv[2])
+if dns_ip not in service_cidr:
+    raise SystemExit(1)
+PY
+then
+  echo "ERROR: CLUSTER_DNS_IP ${CLUSTER_DNS_IP} is outside SERVICE_CIDR ${SERVICE_CIDR}." >&2
+  exit 1
+fi
+
+echo "==> Repository network invariants verified"
+echo "    Pod CIDR:     ${CLUSTER_CIDR}"
+echo "    Service CIDR: ${SERVICE_CIDR}"
+echo "    Cluster DNS:  ${CLUSTER_DNS_IP}"
 
 echo "==> Installing K3s ${K3S_VERSION} (Disabling default Flannel, Traefik, ServiceLB, Local Storage)..."
 curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION="${K3S_VERSION}" sh -s - server \
   --cluster-cidr="${CLUSTER_CIDR}" \
+  --service-cidr="${SERVICE_CIDR}" \
+  --cluster-dns="${CLUSTER_DNS_IP}" \
   --flannel-backend=none \
   --disable-network-policy \
   --disable=servicelb \
@@ -269,9 +290,15 @@ fi
 
 echo "==> Waiting for CoreDNS to be ready..."
 kubectl rollout status deployment/coredns -n kube-system --timeout=180s
-CLUSTER_DNS_IP="$(kubectl get service kube-dns -n kube-system -o jsonpath='{.spec.clusterIP}')"
-if [[ -z "$CLUSTER_DNS_IP" ]]; then
+ACTUAL_CLUSTER_DNS_IP="$(kubectl get service kube-dns -n kube-system -o jsonpath='{.spec.clusterIP}')"
+if [[ -z "$ACTUAL_CLUSTER_DNS_IP" ]]; then
   echo "ERROR: kube-dns Service has no ClusterIP." >&2
+  exit 1
+fi
+if [[ "$ACTUAL_CLUSTER_DNS_IP" != "$CLUSTER_DNS_IP" ]]; then
+  echo "ERROR: kube-dns Service IP does not match the bootstrap contract." >&2
+  echo "       Expected: ${CLUSTER_DNS_IP}" >&2
+  echo "       Actual:   ${ACTUAL_CLUSTER_DNS_IP}" >&2
   exit 1
 fi
 
