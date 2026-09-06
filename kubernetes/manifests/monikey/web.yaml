@@ -59,8 +59,10 @@ spec:
             - containerPort: 80
               name: http
           env:
+            # Nginx's resolver directive requires a DNS server address. K3s
+            # exposes CoreDNS at the stable kube-dns Service IP 10.43.0.10.
             - name: NGINX_DNS_RESOLVER
-              value: kube-dns.kube-system.svc.cluster.local
+              value: "10.43.0.10"
           resources:
             requests:
               cpu: 25m
