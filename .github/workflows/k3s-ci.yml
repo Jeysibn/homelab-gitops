@@ -35,6 +35,7 @@ jobs:
           set -euo pipefail
 
           bash -n kubernetes/bootstrap/*.sh
+          test -f kubernetes/bootstrap/verify-cluster-network.sh
 
           K3S_CIDR="$(awk -F'"' '/^CLUSTER_CIDR=/{print $2; exit}' kubernetes/bootstrap/install-k3s.sh)"
           SERVICE_CIDR="$(awk -F'"' '/^SERVICE_CIDR=/{print $2; exit}' kubernetes/bootstrap/install-k3s.sh)"
@@ -56,14 +57,16 @@ jobs:
             exit 1
           fi
 
-          python3 - "$SERVICE_CIDR" "$CLUSTER_DNS_IP" <<'PY'
+          python3 - "$K3S_CIDR" "$SERVICE_CIDR" "$CLUSTER_DNS_IP" <<'PY'
           import ipaddress
           import sys
-
-          service_cidr = ipaddress.ip_network(sys.argv[1])
-          dns_ip = ipaddress.ip_address(sys.argv[2])
-          if dns_ip not in service_cidr:
-              raise SystemExit(f"Cluster DNS {dns_ip} is outside service CIDR {service_cidr}")
+          pod = ipaddress.ip_network(sys.argv[1])
+          svc = ipaddress.ip_network(sys.argv[2])
+          dns = ipaddress.ip_address(sys.argv[3])
+          if pod.overlaps(svc):
+              raise SystemExit(f"Pod CIDR {pod} overlaps service CIDR {svc}")
+          if dns not in svc:
+              raise SystemExit(f"Cluster DNS {dns} is outside service CIDR {svc}")
           PY
 
           if [[ "$MONIKEY_NGINX_DNS" != "$CLUSTER_DNS_IP" ]]; then
@@ -73,6 +76,14 @@ jobs:
 
           grep -F -- '--service-cidr="${SERVICE_CIDR}"' kubernetes/bootstrap/install-k3s.sh >/dev/null
           grep -F -- '--cluster-dns="${CLUSTER_DNS_IP}"' kubernetes/bootstrap/install-k3s.sh >/dev/null
+          grep -F -- '--resolv-conf="${RESOLV_CONF}"' kubernetes/bootstrap/install-k3s.sh >/dev/null
+          grep -F -- 'bash "$NETWORK_VERIFY_SCRIPT"' kubernetes/bootstrap/install-k3s.sh >/dev/null
+          grep -F -- 'bash "$NETWORK_VERIFY_SCRIPT"' kubernetes/bootstrap/install-argocd.sh >/dev/null
+
+          if [[ -f kubernetes/bootstrap/coredns-custom.yaml ]]; then
+            echo "Do not add a bootstrap CoreDNS forward override; K3s already manages forward . /etc/resolv.conf." >&2
+            exit 1
+          fi
 
           if [[ "$K3S_MINOR" != "$SCHEMA_MINOR" ]]; then
             echo "Kubeconform schema version ($KUBERNETES_SCHEMA_VERSION) is not aligned with K3s ($K3S_VERSION)." >&2
@@ -84,15 +95,14 @@ jobs:
             exit 1
           fi
 
-          if grep -R --line-number -E 'projectcalico/calico/.*/custom-resources\.yaml|cidr:[[:space:]]*192\.168\.0\.0/16' \
+          if grep -R --line-number -E 'projectcalico/calico/.*/custom-resources\.yaml|cidr:[[:space:]]*192\.168\.0\.0/16|upstream\.override' \
             kubernetes/bootstrap kubernetes/argocd-apps kubernetes/helm; then
-            echo "Found a legacy/default Calico 192.168.0.0/16 installation path." >&2
+            echo "Found a legacy Calico or CoreDNS bootstrap path that can break fresh-cluster networking." >&2
             exit 1
           fi
 
-          echo "K3s/Calico pod CIDR invariant OK: $K3S_CIDR"
-          echo "K3s service CIDR invariant OK: $SERVICE_CIDR"
-          echo "Cluster DNS / MoniKey Nginx resolver invariant OK: $CLUSTER_DNS_IP"
+          echo "Fresh-install network invariants OK"
+          echo "Pod CIDR: $K3S_CIDR; Service CIDR: $SERVICE_CIDR; Cluster DNS: $CLUSTER_DNS_IP"
 
       - name: 1. YAML Syntax Check
         uses: ibiqlik/action-yamllint@v3
