@@ -13,8 +13,9 @@ A GitOps-driven local Kubernetes homelab. This repository is the source of truth
 
 * **Infrastructure:** Proxmox VM provisioned with Terraform.
 * **Cluster Engine:** K3s lightweight Kubernetes.
-* **GitOps Controller:** Argo CD App-of-Apps with sync waves.
-* **Networking & Ingress:** Calico CNI, MetalLB LoadBalancer IPAM, Traefik ingress.
+* **Bootstrap Networking:** Calico CNI is installed and owned exclusively by the K3s bootstrap scripts, with pod CIDR `10.42.0.0/16`.
+* **GitOps Controller:** Argo CD App-of-Apps with sync waves. Argo starts only after Calico and in-cluster DNS pass bootstrap health checks.
+* **Ingress & Load Balancing:** MetalLB LoadBalancer IPAM and Traefik ingress.
 * **TLS:** cert-manager with local self-signed issuer by default. Public Let’s Encrypt requires a real DNS domain and reachable HTTP-01 or DNS-01 validation.
 * **DNS & Routing:** Pi-hole for LAN DNS/ad-blocking and Unbound for recursive upstream DNS.
 * **Storage:** Longhorn CSI. Current setup is single-node with one replica; HA requires additional nodes/disks.
@@ -28,9 +29,11 @@ See [docs/Proxmox-Environment.md](docs/Proxmox-Environment.md) for the current P
 ## ⚙️ GitOps Workflow
 
 1. **Develop:** Changes are made on `dev`.
-2. **Validate:** GitHub Actions checks Kubernetes manifests, Helm rendering, Kubeconform, Trivy, Terraform format/validate, and TFLint where applicable.
+2. **Validate:** GitHub Actions checks bootstrap networking invariants, shell syntax, Kubernetes manifests, Helm rendering, Kubeconform, Trivy, Terraform format/validate, and TFLint where applicable.
 3. **Promote:** A pull request merges `dev` into `main` after checks pass.
-4. **Reconcile:** Argo CD watches `main`, renders the application registry, and reconciles the K3s cluster to match the repository.
+4. **Reconcile:** Argo CD watches `main`, renders the application registry, and reconciles cluster services to match the repository.
+
+Calico is intentionally excluded from the Argo application registry. Argo CD depends on a working CNI, so K3s and Calico are treated as bootstrap infrastructure rather than GitOps-managed child applications.
 
 The Argo CD Application registry is documented in [docs/Argo-Application-Registry.md](docs/Argo-Application-Registry.md).
 
@@ -45,25 +48,38 @@ Use this flow for a new node or disaster recovery rebuild.
    terraform apply
    ```
 
-2. Install K3s and the bootstrap CNI:
+2. Install K3s and Calico:
 
    ```bash
    ./kubernetes/bootstrap/install-k3s.sh
    ```
 
-3. Install Argo CD and apply the root application:
+   The script refuses to continue if the K3s and Calico pod CIDRs differ, if incompatible pre-existing Calico IPPools/IPAM blocks are detected, or if CoreDNS cannot resolve both Kubernetes service DNS and `github.com` from a pod.
+
+3. Install the pinned Argo CD release and apply the root application:
 
    ```bash
    ./kubernetes/bootstrap/install-argocd.sh
    ```
 
+   The script waits for the Argo controller/repo-server and requires `root-app` to reach `Synced` before reporting success.
+
 4. Verify Argo CD and cluster services:
 
    ```bash
+   kubectl get ippools.crd.projectcalico.org
+   kubectl get pods -A -o wide
    kubectl get app -n argocd
-   kubectl get pods -A
    kubectl get svc -A | grep LoadBalancer
    ```
+
+If an older cluster contains Calico allocations outside `10.42.0.0/16`, inspect them separately with:
+
+```bash
+bash ./kubernetes/bootstrap/recover-calico-ipam.sh --plan
+```
+
+The normal bootstrap never performs destructive IPAM cleanup automatically.
 
 ## 🌐 Local Routing Model
 
