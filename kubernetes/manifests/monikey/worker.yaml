@@ -3,6 +3,8 @@ kind: Deployment
 metadata:
   name: worker
   namespace: monikey
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
 spec:
   replicas: 1
   selector:
@@ -22,7 +24,6 @@ spec:
           type: RuntimeDefault
       containers:
         - name: worker
-          # Bump alongside api.yaml / migrate-job.yaml when promoting a new build.
           image: ghcr.io/jeysibn/monikey-api:latest
           command: ["node", "dist/worker.js"]
           envFrom:
