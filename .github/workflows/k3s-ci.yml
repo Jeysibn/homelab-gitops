@@ -6,11 +6,15 @@ on:
     branches: [ main, dev ]
     paths:
       - 'kubernetes/**'
+      - '.github/workflows/k3s-ci.yml'
   pull_request:
-    branches: [ main, dev ] # Removed paths filter so required check always reports status
+    branches: [ main, dev ]
 
 permissions:
   contents: read
+
+env:
+  KUBERNETES_SCHEMA_VERSION: '1.36.0'
 
 jobs:
   validate:
@@ -25,6 +29,44 @@ jobs:
         uses: azure/setup-helm@v4
         with:
           version: 'v3.14.0'
+
+      - name: 0. Verify bootstrap network invariants
+        run: |
+          set -euo pipefail
+
+          bash -n kubernetes/bootstrap/*.sh
+
+          K3S_CIDR="$(awk -F'"' '/^CLUSTER_CIDR=/{print $2; exit}' kubernetes/bootstrap/install-k3s.sh)"
+          CALICO_CIDR="$(yq -r 'select(.kind == "Installation") | .spec.calicoNetwork.ipPools[0].cidr' kubernetes/bootstrap/calico-installation.yaml)"
+          K3S_VERSION="$(awk -F'"' '/^K3S_VERSION=/{print $2; exit}' kubernetes/bootstrap/install-k3s.sh)"
+          K3S_MINOR="$(printf '%s' "$K3S_VERSION" | sed -E 's/^v([0-9]+\.[0-9]+).*/\1/')"
+          SCHEMA_MINOR="$(printf '%s' "$KUBERNETES_SCHEMA_VERSION" | sed -E 's/^([0-9]+\.[0-9]+).*/\1/')"
+
+          test -n "$K3S_CIDR"
+          test -n "$CALICO_CIDR"
+
+          if [[ "$K3S_CIDR" != "$CALICO_CIDR" ]]; then
+            echo "K3s cluster CIDR ($K3S_CIDR) does not match Calico IPPool CIDR ($CALICO_CIDR)." >&2
+            exit 1
+          fi
+
+          if [[ "$K3S_MINOR" != "$SCHEMA_MINOR" ]]; then
+            echo "Kubeconform schema version ($KUBERNETES_SCHEMA_VERSION) is not aligned with K3s ($K3S_VERSION)." >&2
+            exit 1
+          fi
+
+          if yq -e '.applications[] | select(.name == "calico-operator")' kubernetes/argocd-apps/values.yaml >/dev/null; then
+            echo "Calico must be bootstrap-owned; do not add calico-operator to the Argo application registry." >&2
+            exit 1
+          fi
+
+          if grep -R --line-number -E 'projectcalico/calico/.*/custom-resources\.yaml|cidr:[[:space:]]*192\.168\.0\.0/16' \
+            kubernetes/bootstrap kubernetes/argocd-apps kubernetes/helm; then
+            echo "Found a legacy/default Calico 192.168.0.0/16 installation path." >&2
+            exit 1
+          fi
+
+          echo "K3s/Calico network invariant OK: $K3S_CIDR"
 
       - name: 1. YAML Syntax Check
         uses: ibiqlik/action-yamllint@v3
@@ -69,12 +111,12 @@ jobs:
       - name: 4. Validate Kubernetes Manifests (Kubeconform)
         run: |
           kubeconform \
-            -kubernetes-version 1.30.0 \
+            -kubernetes-version "$KUBERNETES_SCHEMA_VERSION" \
             -strict \
             -ignore-missing-schemas \
             -schema-location default \
             -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
-            kubernetes/manifests/ rendered-manifests.yaml
+            kubernetes/bootstrap/*.yaml kubernetes/manifests/ rendered-manifests.yaml
 
       - name: 5. Scan Manifests for Misconfigurations (Trivy)
         uses: aquasecurity/trivy-action@master

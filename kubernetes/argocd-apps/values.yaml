@@ -12,16 +12,6 @@ defaults:
     - resources-finalizer.argocd.argoproj.io
 
 applications:
-  - name: calico-operator
-    repository: https://docs.tigera.io/calico/charts
-    chart: tigera-operator
-    targetRevision: v3.32.1
-    valuesFile: kubernetes/helm/calico-operator/values.yaml
-    namespace: tigera-operator
-    syncWave: 1
-    prune: false
-    finalizers: []
-
   - name: longhorn
     repository: https://charts.longhorn.io
     chart: longhorn
