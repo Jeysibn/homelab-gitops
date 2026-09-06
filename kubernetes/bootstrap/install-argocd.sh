@@ -21,11 +21,18 @@ kubectl rollout status statefulset/argocd-application-controller -n argocd --tim
 kubectl rollout status deployment/argocd-repo-server -n argocd --timeout=300s
 kubectl rollout status deployment/argocd-server -n argocd --timeout=300s
 
-echo "==> Verifying the repo server can resolve GitHub before creating the root app..."
-kubectl exec -n argocd deployment/argocd-repo-server -- \
-  getent hosts github.com >/dev/null
-
 echo "==> Applying Root Application (App-of-Apps pattern)..."
 kubectl apply -f "$REPO_ROOT/kubernetes/bootstrap/root-app.yaml"
+
+echo "==> Waiting for the root application to fetch Git and reconcile..."
+if ! kubectl wait application/root-app -n argocd \
+  --for=jsonpath='{.status.sync.status}'=Synced --timeout=300s; then
+  echo "ERROR: root-app did not reach Synced state." >&2
+  kubectl get application root-app -n argocd -o yaml >&2 || true
+  kubectl logs -n argocd deployment/argocd-repo-server --tail=100 >&2 || true
+  exit 1
+fi
+
+kubectl get applications -n argocd
 
 echo "==> Argo CD bootstrap complete!"
