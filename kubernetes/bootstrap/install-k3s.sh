@@ -267,6 +267,33 @@ if [[ -n "$OUTSIDE_PODS" ]]; then
   exit 1
 fi
 
+echo "==> Waiting for CoreDNS to be ready..."
+kubectl rollout status deployment/coredns -n kube-system --timeout=180s
+CLUSTER_DNS_IP="$(kubectl get service kube-dns -n kube-system -o jsonpath='{.spec.clusterIP}')"
+if [[ -z "$CLUSTER_DNS_IP" ]]; then
+  echo "ERROR: kube-dns Service has no ClusterIP." >&2
+  exit 1
+fi
+
+echo "==> Verifying pod DNS through ${CLUSTER_DNS_IP}..."
+kubectl delete pod k3s-bootstrap-dns-test -n default --ignore-not-found >/dev/null 2>&1 || true
+kubectl run k3s-bootstrap-dns-test -n default \
+  --image=busybox:1.36 \
+  --restart=Never \
+  --env="DNS_SERVER=${CLUSTER_DNS_IP}" \
+  --command -- sh -c \
+  'nslookup kubernetes.default.svc.cluster.local "$DNS_SERVER" && nslookup github.com "$DNS_SERVER"'
+
+if ! kubectl wait -n default pod/k3s-bootstrap-dns-test \
+  --for=jsonpath='{.status.phase}'=Succeeded --timeout=120s; then
+  echo "ERROR: in-cluster DNS smoke test failed." >&2
+  kubectl logs -n default k3s-bootstrap-dns-test >&2 || true
+  kubectl describe pod -n default k3s-bootstrap-dns-test >&2 || true
+  exit 1
+fi
+kubectl logs -n default k3s-bootstrap-dns-test
+kubectl delete pod -n default k3s-bootstrap-dns-test --wait=false >/dev/null
+
 echo "==> Verifying final Calico IPPool configuration..."
 kubectl get ippools.crd.projectcalico.org \
   -o custom-columns='NAME:.metadata.name,CIDR:.spec.cidr,DISABLED:.spec.disabled'
