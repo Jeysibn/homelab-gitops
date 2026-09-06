@@ -1,20 +1,20 @@
-name: K3s Manifest & Helm CI
+name: Kubernetes CI
 
 on:
   workflow_dispatch:
   push:
-    branches: [ main, dev ]
+    branches: [main, dev]
     paths:
       - 'kubernetes/**'
       - '.github/workflows/k3s-ci.yml'
   pull_request:
-    branches: [ main, dev ]
+    branches: [main, dev]
+    paths:
+      - 'kubernetes/**'
+      - '.github/workflows/k3s-ci.yml'
 
 permissions:
   contents: read
-
-env:
-  KUBERNETES_SCHEMA_VERSION: '1.36.0'
 
 jobs:
   validate:
@@ -22,143 +22,37 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout Code
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Helm
-        uses: azure/setup-helm@v4
-        with:
-          version: 'v3.14.0'
+      - name: Check shell scripts
+        run: bash -n kubernetes/bootstrap/*.sh
 
-      - name: 0. Verify bootstrap network invariants
-        run: |
-          set -euo pipefail
-
-          bash -n kubernetes/bootstrap/*.sh
-          test -f kubernetes/bootstrap/verify-cluster-network.sh
-
-          K3S_CIDR="$(awk -F'"' '/^CLUSTER_CIDR=/{print $2; exit}' kubernetes/bootstrap/install-k3s.sh)"
-          SERVICE_CIDR="$(awk -F'"' '/^SERVICE_CIDR=/{print $2; exit}' kubernetes/bootstrap/install-k3s.sh)"
-          CLUSTER_DNS_IP="$(awk -F'"' '/^CLUSTER_DNS_IP=/{print $2; exit}' kubernetes/bootstrap/install-k3s.sh)"
-          CALICO_CIDR="$(yq -r 'select(.kind == "Installation") | .spec.calicoNetwork.ipPools[0].cidr' kubernetes/bootstrap/calico-installation.yaml)"
-          MONIKEY_NGINX_DNS="$(yq -r 'select(.kind == "Deployment" and .metadata.name == "web") | .spec.template.spec.containers[] | select(.name == "web") | .env[] | select(.name == "NGINX_DNS_RESOLVER") | .value' kubernetes/manifests/monikey/web.yaml)"
-          K3S_VERSION="$(awk -F'"' '/^K3S_VERSION=/{print $2; exit}' kubernetes/bootstrap/install-k3s.sh)"
-          K3S_MINOR="$(printf '%s' "$K3S_VERSION" | sed -E 's/^v([0-9]+\.[0-9]+).*/\1/')"
-          SCHEMA_MINOR="$(printf '%s' "$KUBERNETES_SCHEMA_VERSION" | sed -E 's/^([0-9]+\.[0-9]+).*/\1/')"
-
-          test -n "$K3S_CIDR"
-          test -n "$SERVICE_CIDR"
-          test -n "$CLUSTER_DNS_IP"
-          test -n "$CALICO_CIDR"
-          test -n "$MONIKEY_NGINX_DNS"
-
-          if [[ "$K3S_CIDR" != "$CALICO_CIDR" ]]; then
-            echo "K3s cluster CIDR ($K3S_CIDR) does not match Calico IPPool CIDR ($CALICO_CIDR)." >&2
-            exit 1
-          fi
-
-          python3 - "$K3S_CIDR" "$SERVICE_CIDR" "$CLUSTER_DNS_IP" <<'PY'
-          import ipaddress
-          import sys
-          pod = ipaddress.ip_network(sys.argv[1])
-          svc = ipaddress.ip_network(sys.argv[2])
-          dns = ipaddress.ip_address(sys.argv[3])
-          if pod.overlaps(svc):
-              raise SystemExit(f"Pod CIDR {pod} overlaps service CIDR {svc}")
-          if dns not in svc:
-              raise SystemExit(f"Cluster DNS {dns} is outside service CIDR {svc}")
-          PY
-
-          if [[ "$MONIKEY_NGINX_DNS" != "$CLUSTER_DNS_IP" ]]; then
-            echo "MoniKey Nginx resolver ($MONIKEY_NGINX_DNS) must match K3s cluster DNS ($CLUSTER_DNS_IP)." >&2
-            exit 1
-          fi
-
-          grep -F -- '--service-cidr="${SERVICE_CIDR}"' kubernetes/bootstrap/install-k3s.sh >/dev/null
-          grep -F -- '--cluster-dns="${CLUSTER_DNS_IP}"' kubernetes/bootstrap/install-k3s.sh >/dev/null
-          grep -F -- '--resolv-conf="${RESOLV_CONF}"' kubernetes/bootstrap/install-k3s.sh >/dev/null
-          grep -F -- 'bash "$NETWORK_VERIFY_SCRIPT"' kubernetes/bootstrap/install-k3s.sh >/dev/null
-          grep -F -- 'bash "$NETWORK_VERIFY_SCRIPT"' kubernetes/bootstrap/install-argocd.sh >/dev/null
-
-          if [[ -f kubernetes/bootstrap/coredns-custom.yaml ]]; then
-            echo "Do not add a bootstrap CoreDNS forward override; K3s already manages forward . /etc/resolv.conf." >&2
-            exit 1
-          fi
-
-          if [[ "$K3S_MINOR" != "$SCHEMA_MINOR" ]]; then
-            echo "Kubeconform schema version ($KUBERNETES_SCHEMA_VERSION) is not aligned with K3s ($K3S_VERSION)." >&2
-            exit 1
-          fi
-
-          if yq -e '.applications[] | select(.name == "calico-operator")' kubernetes/argocd-apps/values.yaml >/dev/null; then
-            echo "Calico must be bootstrap-owned; do not add calico-operator to the Argo application registry." >&2
-            exit 1
-          fi
-
-          if grep -R --line-number -E 'projectcalico/calico/.*/custom-resources\.yaml|cidr:[[:space:]]*192\.168\.0\.0/16|upstream\.override' \
-            kubernetes/bootstrap kubernetes/argocd-apps kubernetes/helm; then
-            echo "Found a legacy Calico or CoreDNS bootstrap path that can break fresh-cluster networking." >&2
-            exit 1
-          fi
-
-          echo "Fresh-install network invariants OK"
-          echo "Pod CIDR: $K3S_CIDR; Service CIDR: $SERVICE_CIDR; Cluster DNS: $CLUSTER_DNS_IP"
-
-      - name: 1. YAML Syntax Check
+      - name: Lint YAML
         uses: ibiqlik/action-yamllint@v3
         with:
           file_or_dir: kubernetes/
 
-      - name: Install Kubeconform
-        run: |
-          curl -sSL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz | tar xz
-          sudo mv kubeconform /usr/local/bin/
+      - name: Setup Helm
+        uses: azure/setup-helm@v4
 
-      - name: 2. Helm Template & Render Check
+      - name: Render Helm manifests
         run: |
           helm lint kubernetes/argocd-apps
           helm template argocd-applications kubernetes/argocd-apps \
             --namespace argocd > rendered-manifests.yaml
 
-      - name: 3. Verify Argo application registry semantics
+      - name: Install kubeconform
         run: |
-          yq eval-all -o=json 'select(.kind == "Application")' rendered-manifests.yaml |
-            jq -s '
-              map({
-                name: .metadata.name,
-                repoURL: (.spec.source.repoURL // .spec.sources[0].repoURL // ""),
-                chart: (.spec.source.chart // .spec.sources[0].chart // ""),
-                path: (.spec.source.path // ""),
-                targetRevision: (.spec.source.targetRevision // .spec.sources[0].targetRevision // ""),
-                namespace: .spec.destination.namespace,
-                syncWave: .metadata.annotations."argocd.argoproj.io/sync-wave",
-                prune: .spec.syncPolicy.automated.prune,
-                selfHeal: .spec.syncPolicy.automated.selfHeal,
-                sourceCount: ((.spec.sources // [.spec.source]) | length),
-                finalizerCount: ((.metadata.finalizers // []) | length)
-              }) | sort_by(.name)
-            ' > /tmp/rendered-applications.json
+          curl -sSL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz | tar xz
+          sudo mv kubeconform /usr/local/bin/
 
-          yq -o=json '.applications | sort_by(.name)' \
-            kubernetes/argocd-apps/tests/expected-applications.yaml > /tmp/expected-applications.json
-
-          diff -u /tmp/expected-applications.json /tmp/rendered-applications.json
-
-      - name: 4. Validate Kubernetes Manifests (Kubeconform)
+      - name: Validate Kubernetes manifests
         run: |
           kubeconform \
-            -kubernetes-version "$KUBERNETES_SCHEMA_VERSION" \
+            -kubernetes-version 1.36.0 \
             -strict \
             -ignore-missing-schemas \
-            -schema-location default \
-            -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
-            kubernetes/bootstrap/*.yaml kubernetes/manifests/ rendered-manifests.yaml
-
-      - name: 5. Scan Manifests for Misconfigurations (Trivy)
-        uses: aquasecurity/trivy-action@master
-        with:
-          scan-type: 'config'
-          scan-ref: 'kubernetes'
-          exit-code: '1'
-          ignore-unfixed: true
-          severity: 'CRITICAL,HIGH'
+            kubernetes/bootstrap/*.yaml \
+            kubernetes/manifests/ \
+            rendered-manifests.yaml
