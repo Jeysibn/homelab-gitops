@@ -13,8 +13,8 @@ TAINTED_NODES=()
 usage() {
   cat <<'EOF'
 Usage:
-  ./recover-calico-ipam.sh --plan
-  ./recover-calico-ipam.sh --apply
+  bash ./recover-calico-ipam.sh --plan
+  bash ./recover-calico-ipam.sh --apply
 
 Environment overrides:
   STALE_BLOCK=192.168.243.192/26
@@ -247,7 +247,7 @@ if [[ ${#TAINTED_NODES[@]} -eq 0 ]]; then
 fi
 for node in "${TAINTED_NODES[@]}"; do
   kubectl taint node "$node" "${TAINT_KEY}=true:NoSchedule" --overwrite
- done
+done
 
 echo "==> Deleting pods that still use the stale block..."
 if [[ -n "$AFFECTED" ]]; then
