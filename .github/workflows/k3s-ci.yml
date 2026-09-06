@@ -10,10 +10,6 @@ on:
       - '.github/workflows/k3s-ci.yml'
   pull_request:
     branches: [main, dev]
-    paths:
-      - 'bootstrap.sh'
-      - 'kubernetes/**'
-      - '.github/workflows/k3s-ci.yml'
 
 permissions:
   contents: read
