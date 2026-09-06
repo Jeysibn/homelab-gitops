@@ -37,18 +37,42 @@ jobs:
           bash -n kubernetes/bootstrap/*.sh
 
           K3S_CIDR="$(awk -F'"' '/^CLUSTER_CIDR=/{print $2; exit}' kubernetes/bootstrap/install-k3s.sh)"
+          SERVICE_CIDR="$(awk -F'"' '/^SERVICE_CIDR=/{print $2; exit}' kubernetes/bootstrap/install-k3s.sh)"
+          CLUSTER_DNS_IP="$(awk -F'"' '/^CLUSTER_DNS_IP=/{print $2; exit}' kubernetes/bootstrap/install-k3s.sh)"
           CALICO_CIDR="$(yq -r 'select(.kind == "Installation") | .spec.calicoNetwork.ipPools[0].cidr' kubernetes/bootstrap/calico-installation.yaml)"
+          MONIKEY_NGINX_DNS="$(yq -r 'select(.kind == "Deployment" and .metadata.name == "web") | .spec.template.spec.containers[] | select(.name == "web") | .env[] | select(.name == "NGINX_DNS_RESOLVER") | .value' kubernetes/manifests/monikey/web.yaml)"
           K3S_VERSION="$(awk -F'"' '/^K3S_VERSION=/{print $2; exit}' kubernetes/bootstrap/install-k3s.sh)"
           K3S_MINOR="$(printf '%s' "$K3S_VERSION" | sed -E 's/^v([0-9]+\.[0-9]+).*/\1/')"
           SCHEMA_MINOR="$(printf '%s' "$KUBERNETES_SCHEMA_VERSION" | sed -E 's/^([0-9]+\.[0-9]+).*/\1/')"
 
           test -n "$K3S_CIDR"
+          test -n "$SERVICE_CIDR"
+          test -n "$CLUSTER_DNS_IP"
           test -n "$CALICO_CIDR"
+          test -n "$MONIKEY_NGINX_DNS"
 
           if [[ "$K3S_CIDR" != "$CALICO_CIDR" ]]; then
             echo "K3s cluster CIDR ($K3S_CIDR) does not match Calico IPPool CIDR ($CALICO_CIDR)." >&2
             exit 1
           fi
+
+          python3 - "$SERVICE_CIDR" "$CLUSTER_DNS_IP" <<'PY'
+          import ipaddress
+          import sys
+
+          service_cidr = ipaddress.ip_network(sys.argv[1])
+          dns_ip = ipaddress.ip_address(sys.argv[2])
+          if dns_ip not in service_cidr:
+              raise SystemExit(f"Cluster DNS {dns_ip} is outside service CIDR {service_cidr}")
+          PY
+
+          if [[ "$MONIKEY_NGINX_DNS" != "$CLUSTER_DNS_IP" ]]; then
+            echo "MoniKey Nginx resolver ($MONIKEY_NGINX_DNS) must match K3s cluster DNS ($CLUSTER_DNS_IP)." >&2
+            exit 1
+          fi
+
+          grep -F -- '--service-cidr="${SERVICE_CIDR}"' kubernetes/bootstrap/install-k3s.sh >/dev/null
+          grep -F -- '--cluster-dns="${CLUSTER_DNS_IP}"' kubernetes/bootstrap/install-k3s.sh >/dev/null
 
           if [[ "$K3S_MINOR" != "$SCHEMA_MINOR" ]]; then
             echo "Kubeconform schema version ($KUBERNETES_SCHEMA_VERSION) is not aligned with K3s ($K3S_VERSION)." >&2
@@ -66,7 +90,9 @@ jobs:
             exit 1
           fi
 
-          echo "K3s/Calico network invariant OK: $K3S_CIDR"
+          echo "K3s/Calico pod CIDR invariant OK: $K3S_CIDR"
+          echo "K3s service CIDR invariant OK: $SERVICE_CIDR"
+          echo "Cluster DNS / MoniKey Nginx resolver invariant OK: $CLUSTER_DNS_IP"
 
       - name: 1. YAML Syntax Check
         uses: ibiqlik/action-yamllint@v3
