@@ -3,6 +3,8 @@ kind: PersistentVolumeClaim
 metadata:
   name: monikey-receipts
   namespace: monikey
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
 spec:
   # RWO is fine here: this is a single-node K3s cluster (see README.md), so
   # the api and worker Deployments' pods always land on the same node and
