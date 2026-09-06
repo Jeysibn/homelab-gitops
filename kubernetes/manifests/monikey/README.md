@@ -1,28 +1,37 @@
 # Monikey
 
-Personal finance app (https://github.com/Jeysibn/monikey). Deployed as four
-workloads in the `monikey` namespace:
+Personal finance app (https://github.com/Jeysibn/monikey). Deployed in the
+`monikey` namespace with an ordered Argo CD sync sequence:
 
-| File | Workload | Notes |
-| --- | --- | --- |
-| `postgres.yaml` | `postgres` StatefulSet + Service | Longhorn-backed PVC, matches `compose.yaml`'s topology |
-| `migrate-job.yaml` | `monikey-migrate` Job | Argo `PreSync` hook — runs `prisma migrate deploy` before api/worker roll out |
-| `api.yaml` | `api` Deployment + Service | `node dist/server.js`, HTTP on 3000 |
-| `worker.yaml` | `worker` Deployment | `node dist/worker.js`, no HTTP surface (background jobs) |
-| `web.yaml` | `web` Deployment + Service | Nginx SPA + `/api` reverse proxy, HTTP on 80 |
-| `ingress.yaml` | Traefik `Ingress` | `monikey.homelab.local` -> `web` |
+| Wave | File | Workload | Notes |
+| --- | --- | --- | --- |
+| 0 | `configmap.yaml` | `monikey-config` ConfigMap | Non-secret application configuration |
+| 0 | `receipts-pvc.yaml` | `monikey-receipts` PVC | Longhorn-backed receipt storage |
+| 0 | `postgres.yaml` | `postgres` StatefulSet + Service | Longhorn-backed database; must be healthy before migrations |
+| 1 | `migrate-job.yaml` | `monikey-migrate` Sync hook | Runs `prisma migrate deploy` after prerequisites are healthy |
+| 2 | `api.yaml` | `api` Deployment + Service | `node dist/server.js`, HTTP on 3000 |
+| 2 | `worker.yaml` | `worker` Deployment | `node dist/worker.js`, background jobs |
+| 2 | `web.yaml` | `web` Deployment + Service | Nginx SPA + `/api` reverse proxy, HTTP on 80 |
+| 3 | `ingress.yaml` | Traefik `Ingress` | `monikey.homelab.local` -> `web` |
+
+The migration Job is deliberately a `Sync` hook rather than `PreSync`.
+`PreSync` runs before all normal Sync resources, which means a fresh cluster
+would start migrations before the ConfigMap, PVCs, and PostgreSQL resources
+exist. The wave ordering above lets Argo CD create and wait for those
+prerequisites before running Prisma, then deploys the application workloads
+only after the migration succeeds.
 
 ## Images
 
-Built and pushed by `.github/workflows/publish.yaml` in the monikey repo,
-tagged with the commit SHA:
+Built and pushed by `.github/workflows/publish.yaml` in the Monikey repo:
 
-- `ghcr.io/jeysibn/monikey-api:<sha>` (shared by `api` and `worker`)
-- `ghcr.io/jeysibn/monikey-web:<sha>`
+- `ghcr.io/jeysibn/monikey-api:latest` (shared by `api`, `worker`, and migration)
+- `ghcr.io/jeysibn/monikey-web:latest`
 
-Bump the `image:` tag in `api.yaml`, `worker.yaml`, `migrate-job.yaml`, and
-`web.yaml` to promote a new build — this repo pins exact tags rather than
-tracking `:latest`, so a promotion is always an explicit, reviewable commit.
+The publish workflow also creates commit-SHA tags. The current homelab manifests
+track `:latest`, so a new registry push by itself does not change Git desired
+state; a pod rollout or a Git manifest change is still required for already
+running pods to consume a newly moved `latest` tag.
 
 ## Secrets
 
@@ -38,11 +47,9 @@ kubectl create secret generic monikey-secrets -n monikey \
   --from-literal=ENCRYPTION_SECRET="$(openssl rand -hex 32)"
 ```
 
-Because the Secret lives outside Git, Argo CD will always show the `monikey`
-Application as missing that one resource — this is expected and is why
-`ignoreDifferences`/an out-of-band Secret is the deliberate tradeoff chosen
-over standing up sealed-secrets for a single app (see PR discussion). All
-other Monikey env vars are non-secret and live in `configmap.yaml` instead.
+Because the Secret lives outside Git, it must already exist before PostgreSQL
+and the migration Job can become healthy. All other Monikey environment
+variables are non-secret and live in `configmap.yaml`.
 
 If you rotate `POSTGRES_PASSWORD`, update both the Secret and the running
 Postgres role (`ALTER ROLE monikey WITH PASSWORD '...'`) — this manifest set
