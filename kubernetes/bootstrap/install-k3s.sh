@@ -187,9 +187,9 @@ if [[ -n "$OUTSIDE_PODS" ]]; then
   printf 'NAMESPACE\tPOD\tIP\tNODE\n%s\n' "$OUTSIDE_PODS" >&2
   echo >&2
   echo "Run the recovery tool in plan mode first:" >&2
-  echo "  $REPO_ROOT/kubernetes/bootstrap/recover-calico-ipam.sh --plan" >&2
+  echo "  bash $REPO_ROOT/kubernetes/bootstrap/recover-calico-ipam.sh --plan" >&2
   echo "Then, after reviewing the detected stale block:" >&2
-  echo "  $REPO_ROOT/kubernetes/bootstrap/recover-calico-ipam.sh --apply" >&2
+  echo "  bash $REPO_ROOT/kubernetes/bootstrap/recover-calico-ipam.sh --apply" >&2
   exit 1
 fi
 
