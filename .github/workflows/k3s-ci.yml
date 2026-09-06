@@ -18,6 +18,7 @@ permissions:
 
 jobs:
   validate:
+    name: Lint & Validate Kubernetes
     runs-on: ubuntu-latest
 
     steps:
