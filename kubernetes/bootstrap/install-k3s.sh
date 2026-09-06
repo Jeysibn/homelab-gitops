@@ -120,7 +120,9 @@ choose_resolv_conf() {
   fi
 }
 
-for cmd in curl kubectl python3 sudo; do
+# kubectl is intentionally not a host prerequisite. The official K3s installer
+# installs the kubectl symlink together with K3s on a fresh node.
+for cmd in curl python3 sudo; do
   command -v "$cmd" >/dev/null 2>&1 || {
     echo "ERROR: required command not found: $cmd" >&2
     exit 1
@@ -197,6 +199,12 @@ curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION="${K3S_VERSION}" sh -s - serv
   --disable=servicelb \
   --disable=traefik \
   --disable=local-storage
+
+command -v kubectl >/dev/null 2>&1 || {
+  echo "ERROR: K3s installed but kubectl was not made available in PATH." >&2
+  echo "Expected the K3s installer to provide /usr/local/bin/kubectl." >&2
+  exit 1
+}
 
 echo "==> Configuring kubeconfig permissions..."
 mkdir -p ~/.kube
