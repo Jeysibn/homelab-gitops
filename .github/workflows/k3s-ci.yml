@@ -5,11 +5,13 @@ on:
   push:
     branches: [main, dev]
     paths:
+      - 'bootstrap.sh'
       - 'kubernetes/**'
       - '.github/workflows/k3s-ci.yml'
   pull_request:
     branches: [main, dev]
     paths:
+      - 'bootstrap.sh'
       - 'kubernetes/**'
       - '.github/workflows/k3s-ci.yml'
 
@@ -26,7 +28,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Check shell scripts
-        run: bash -n kubernetes/bootstrap/*.sh
+        run: bash -n bootstrap.sh kubernetes/bootstrap/*.sh
 
       - name: Lint YAML
         uses: ibiqlik/action-yamllint@v3
