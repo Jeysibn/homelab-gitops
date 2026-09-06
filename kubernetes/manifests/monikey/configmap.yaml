@@ -3,6 +3,8 @@ kind: ConfigMap
 metadata:
   name: monikey-config
   namespace: monikey
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
 data:
   # Non-secret application config. Secrets (DATABASE_URL, POSTGRES_PASSWORD,
   # ENCRYPTION_SECRET, and any live-provider API keys) live in the
