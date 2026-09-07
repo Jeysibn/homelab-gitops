@@ -15,6 +15,206 @@ This document details historical configuration issues, root causes, and technica
 | **Workflow Execution Filtering** | Low | Pipeline did not trigger on custom feature or test branches. | Updated `on.push.branches` filters and added `workflow_dispatch` for manual UI triggers. |
 | **Fresh-cluster DNS startup** | High | Pi-hole and Unbound were reconciled together, and DHCP used the string value `"false"`, which Helm can evaluate as enabled. | Start Pi-hole after Unbound, use a boolean `false`, and expose Unbound readiness/liveness checks. |
 | **CoreDNS upstream reset** | High | The CoreDNS ConfigMap was edited manually, so a fresh K3s install did not contain the public upstream resolvers. | Apply K3s's supported `coredns-custom` override during bootstrap with Cloudflare (`1.1.1.1`) and Google (`8.8.8.8`) DNS. |
+| **Single-node Calico UDP Service failure** | Critical | With VXLAN enabled, the live Calico v3.32.1 iptables dataplane installed a blanket UDP `NOTRACK` rule in raw `cali-PREROUTING`, causing UDP Kubernetes Service traffic to bypass normal conntrack/NAT handling. | For this repository's single-node K3s topology, set Calico `encapsulation: None`, keep `containerIPForwarding: Enabled` and `natOutgoing: Enabled`, restart `calico-node`, and require the network acceptance test to pass before Argo CD/workloads are installed. |
+
+---
+
+## Single-Node K3s: Required Calico Encapsulation Setting
+
+### Scope
+
+This section applies to the current homelab topology: **one K3s node using Calico as the CNI and kube-proxy in iptables mode**.
+
+For this single-node deployment, Calico overlay encapsulation is **not required** and must remain disabled in `kubernetes/bootstrap/calico-installation.yaml`:
+
+```yaml
+spec:
+  calicoNetwork:
+    containerIPForwarding: Enabled
+    ipPools:
+      - name: default-ipv4-ippool
+        blockSize: 26
+        cidr: 10.42.0.0/16
+        encapsulation: None
+        natOutgoing: Enabled
+        nodeSelector: all()
+```
+
+The required single-node setting is:
+
+```yaml
+encapsulation: None
+```
+
+Do not change the single-node bootstrap back to `VXLANCrossSubnet` without revalidating the generated Calico and kube-proxy dataplane rules.
+
+For a future multi-node cluster, re-evaluate encapsulation based on the node/subnet topology. `None` is a deliberate requirement for the current one-node homelab, not a universal recommendation for every multi-node Calico deployment.
+
+### Incident: September 7, 2026
+
+The cluster initially used:
+
+```yaml
+encapsulation: VXLANCrossSubnet
+```
+
+K3s was running:
+
+```text
+v1.36.3+k3s1
+```
+
+Calico was running:
+
+```text
+v3.32.1
+```
+
+kube-proxy was running in:
+
+```text
+--proxy-mode=iptables
+```
+
+CoreDNS was healthy and reachable directly at its pod IP, but DNS through the Kubernetes Service IP failed.
+
+Observed acceptance-test behavior:
+
+```text
+[1/6] pod -> pod IP                  PASS
+[2/6] pod -> ClusterIP               PASS
+[3/6] pod -> CoreDNS endpoint IP     PASS
+[4/6] pod -> CoreDNS ClusterIP       FAIL
+```
+
+Additional tests showed:
+
+- Direct DNS to the CoreDNS pod IP worked.
+- TCP to `10.43.0.10:53` worked.
+- UDP to `10.43.0.10:53` failed.
+- External UDP DNS from pods to `1.1.1.1:53` failed.
+- Host DNS to `1.1.1.1:53` worked.
+- kube-dns EndpointSlice and kube-proxy DNAT destination were correct.
+- Conntrack usage was far below its maximum.
+
+### Root cause
+
+The live Calico raw-table rules contained:
+
+```text
+-A cali-PREROUTING -p udp -j NOTRACK
+```
+
+The nftables view showed the same behavior:
+
+```text
+meta l4proto udp ... notrack
+```
+
+There was no destination-port restriction on the live rule, so it matched all UDP traffic.
+
+This was important because the intended Calico VXLAN NOTRACK behavior is supposed to apply only to VXLAN UDP traffic (UDP/4789). On the affected cluster, the live rendered/programmed rule was broader than intended.
+
+Because raw-table processing happens before the normal Kubernetes Service NAT path, UDP packets were marked untracked before kube-proxy could use normal conntrack-based NAT for the Service. This specifically broke UDP Service traffic while TCP Service traffic continued to work.
+
+The resulting failure path was:
+
+```text
+Pod UDP packet
+  -> Calico raw PREROUTING
+  -> blanket UDP NOTRACK
+  -> packet bypasses normal conntrack handling
+  -> kube-proxy UDP Service NAT fails
+  -> CoreDNS ClusterIP / external UDP DNS time out
+```
+
+This incident was **not** caused by:
+
+- `/etc/resolv.conf`
+- CoreDNS health
+- CoreDNS RBAC
+- missing kube-dns endpoints
+- kube-proxy pointing to a stale CoreDNS endpoint
+- conntrack exhaustion
+- an iptables legacy/nft backend mismatch
+
+### Durable fix
+
+The Calico pool was changed to:
+
+```yaml
+encapsulation: None
+```
+
+The live operator configuration was reconciled, which produced:
+
+```text
+ipipMode: Never
+vxlanMode: Never
+natOutgoing: true
+```
+
+After restarting `calico-node`, the blanket UDP `NOTRACK` rule disappeared from `cali-PREROUTING`.
+
+The network acceptance test then passed all checks:
+
+```text
+[1/6] pod -> pod IP
+[2/6] pod -> ClusterIP
+[3/6] pod -> CoreDNS endpoint IP
+[4/6] pod -> CoreDNS ClusterIP
+[5/6] Kubernetes service discovery
+[6/6] external DNS required by GitOps
+
+==> Cluster network acceptance test passed
+    Pod CIDR routing:       OK
+    Service ClusterIP:      OK
+    CoreDNS endpoint:       OK
+    CoreDNS Service:        OK
+    Kubernetes DNS:         OK
+    External GitOps DNS:    OK
+```
+
+### Verification commands
+
+Verify the live Calico pool configuration:
+
+```bash
+sudo kubectl get installation.operator.tigera.io default \
+  -o jsonpath='{.spec.calicoNetwork.ipPools[0].encapsulation}{"\n"}'
+
+sudo kubectl get ippool default-ipv4-ippool \
+  -o yaml | grep -E 'vxlanMode|ipipMode|natOutgoing'
+```
+
+Expected for the current single-node topology:
+
+```text
+None
+ipipMode: Never
+natOutgoing: true
+vxlanMode: Never
+```
+
+Check that the blanket UDP NOTRACK rule is absent:
+
+```bash
+sudo iptables-nft -t raw \
+  -L cali-PREROUTING \
+  -n -v --line-numbers
+
+sudo iptables-nft-save -t raw | \
+  grep -Ei 'NOTRACK|cali-PREROUTING'
+```
+
+Then run the mandatory network acceptance test:
+
+```bash
+cd kubernetes/bootstrap
+sudo bash verify-cluster-network.sh
+```
+
+Do not continue to Argo CD or application workloads unless all six checks pass.
 
 ---
 
