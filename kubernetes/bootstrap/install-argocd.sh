@@ -26,7 +26,6 @@ kubectl get --raw=/readyz >/dev/null 2>&1 || {
   exit 1
 }
 
-echo "==> Bootstrap directory: $SCRIPT_DIR"
 echo "==> Creating Argo CD namespace..."
 kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
 
@@ -34,29 +33,33 @@ echo "==> Installing Argo CD ${ARGOCD_VERSION}..."
 kubectl apply --server-side --force-conflicts -n argocd \
   -f "https://raw.githubusercontent.com/argoproj/argo-cd/${ARGOCD_VERSION}/manifests/install.yaml"
 
-# Argo CD repo-server performs a self gRPC check for /healthz?full=true.
-# Disable gRPC DNS TXT service-config lookups so slow DNS cannot make the
-# liveness probe time out and restart an otherwise healthy repo-server.
-echo "==> Configuring stable repo-server health checks..."
-kubectl patch configmap argocd-cmd-params-cm -n argocd --type merge \
-  -p '{"data":{"reposerver.grpc.enable.txt.service.config":"false"}}'
-kubectl rollout restart deployment/argocd-repo-server -n argocd
-
-echo "==> Waiting for Argo CD..."
+echo "==> Waiting for Application CRD..."
 kubectl wait --for=condition=Established \
   crd/applications.argoproj.io \
   --timeout=120s
 
-kubectl rollout status deployment/argocd-repo-server \
-  -n argocd --timeout=300s
-
-kubectl wait --for=condition=Ready pod \
-  -n argocd \
-  -l app.kubernetes.io/part-of=argocd \
-  --timeout=300s
-
 echo "==> Applying root application..."
 kubectl apply -f "$ROOT_APP"
+
+echo "==> Configuring repo-server health checks..."
+kubectl patch configmap argocd-cmd-params-cm -n argocd --type merge \
+  -p '{"data":{"reposerver.grpc.enable.txt.service.config":"false"}}'
+kubectl rollout restart deployment/argocd-repo-server -n argocd
+
+echo "==> Waiting for Argo CD workloads..."
+for deployment in \
+  argocd-applicationset-controller \
+  argocd-dex-server \
+  argocd-notifications-controller \
+  argocd-redis \
+  argocd-repo-server \
+  argocd-server; do
+  kubectl rollout status "deployment/${deployment}" \
+    -n argocd --timeout=300s
+done
+
+kubectl rollout status statefulset/argocd-application-controller \
+  -n argocd --timeout=300s
 
 kubectl get applications -n argocd
 

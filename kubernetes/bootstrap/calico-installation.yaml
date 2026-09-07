@@ -1,16 +1,21 @@
 # Calico installation configuration for the K3s cluster.
 # Keep this CIDR aligned with --cluster-cidr in install-k3s.sh.
+#
+# This homelab currently runs a single K3s node, so an overlay tunnel is not
+# required. Keeping encapsulation disabled also avoids Calico's VXLAN NOTRACK
+# path, which can interfere with kube-proxy UDP Service NAT on this platform.
 apiVersion: operator.tigera.io/v1
 kind: Installation
 metadata:
   name: default
 spec:
   calicoNetwork:
+    containerIPForwarding: Enabled
     ipPools:
       - name: default-ipv4-ippool
         blockSize: 26
         cidr: 10.42.0.0/16
-        encapsulation: VXLANCrossSubnet
+        encapsulation: None
         natOutgoing: Enabled
         nodeSelector: all()
 
