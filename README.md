@@ -35,6 +35,45 @@ See [docs/Service-Catalog.md](docs/Service-Catalog.md) for service URLs and [doc
 
 Calico is bootstrap-owned because Argo CD requires a working CNI before it can operate.
 
+## ⚠️ Required Calico Setting for the Single-Node K3s Topology
+
+This repository currently deploys K3s as a **single-node cluster**. For this topology, Calico **must keep overlay encapsulation disabled**:
+
+```yaml
+spec:
+  calicoNetwork:
+    containerIPForwarding: Enabled
+    ipPools:
+      - cidr: 10.42.0.0/16
+        encapsulation: None
+        natOutgoing: Enabled
+```
+
+Do **not** change this single-node deployment back to `VXLANCrossSubnet` or another VXLAN mode without revalidating the network dataplane.
+
+During the September 2026 bootstrap investigation, Calico v3.32.1 with VXLAN enabled installed a live raw-table rule equivalent to:
+
+```text
+-p udp -j NOTRACK
+```
+
+The rule matched all UDP traffic instead of only VXLAN UDP/4789. Because kube-proxy was running in iptables mode, UDP Kubernetes Service NAT depended on conntrack. The blanket `NOTRACK` rule caused UDP Service traffic such as CoreDNS `10.43.0.10:53` to bypass normal conntrack/NAT handling.
+
+Observed behavior:
+
+- Pod-to-pod routing worked.
+- TCP ClusterIP routing worked.
+- Direct DNS to the CoreDNS pod IP worked.
+- TCP to the CoreDNS ClusterIP worked.
+- UDP to the CoreDNS ClusterIP failed.
+- External UDP DNS from pods failed.
+
+Changing the Calico pool to `encapsulation: None`, reconciling the operator, and restarting `calico-node` removed the blanket UDP `NOTRACK` rule. The cluster network acceptance test then passed all pod routing, Service, internal DNS, and external DNS checks.
+
+For a future **multi-node** deployment, do not automatically reuse this assumption. Re-evaluate whether encapsulation is required for the node/subnet topology and validate the generated Calico and kube-proxy rules before enabling VXLAN.
+
+See [docs/Troubleshooting.md](docs/Troubleshooting.md) for the full incident details and verification commands.
+
 ## 🚀 Fresh Bootstrap
 
 The normal deployment flow starts by cloning this repository onto the new Ubuntu VM.
