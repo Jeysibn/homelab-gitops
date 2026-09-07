@@ -120,6 +120,7 @@ ip_in_cidr "$ECHO_POD_IP" "$CLUSTER_CIDR" || \
 ip_in_cidr "$ECHO_SERVICE_IP" "$SERVICE_CIDR" || \
   fail "acceptance-test Service IP ${ECHO_SERVICE_IP} is outside ${SERVICE_CIDR}."
 
+echo "==> Running pod, Service, and DNS acceptance tests..."
 kubectl run network-client -n "$TEST_NAMESPACE" \
   --image="$TEST_IMAGE" \
   --restart=Never \
@@ -147,11 +148,26 @@ kubectl run network-client -n "$TEST_NAMESPACE" \
     nslookup github.com "$DNS_SERVICE_IP" >/dev/null
   '
 
-if ! kubectl wait pod/network-client -n "$TEST_NAMESPACE" \
-  --for=jsonpath='{.status.phase}'=Succeeded --timeout=120s; then
+for attempt in {1..60}; do
+  PHASE="$(kubectl get pod network-client -n "$TEST_NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+  case "$PHASE" in
+    Succeeded)
+      break
+      ;;
+    Failed)
+      kubectl logs -n "$TEST_NAMESPACE" network-client >&2 || true
+      kubectl describe pod -n "$TEST_NAMESPACE" network-client >&2 || true
+      fail "cluster network acceptance test failed. Do not install Argo CD or workloads."
+      ;;
+  esac
+  sleep 2
+done
+
+PHASE="$(kubectl get pod network-client -n "$TEST_NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+if [[ "$PHASE" != "Succeeded" ]]; then
   kubectl logs -n "$TEST_NAMESPACE" network-client >&2 || true
   kubectl describe pod -n "$TEST_NAMESPACE" network-client >&2 || true
-  fail "cluster network acceptance test failed. Do not install Argo CD or workloads."
+  fail "cluster network acceptance test timed out. Do not install Argo CD or workloads."
 fi
 
 kubectl logs -n "$TEST_NAMESPACE" network-client
