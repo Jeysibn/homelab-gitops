@@ -34,10 +34,21 @@ echo "==> Installing Argo CD ${ARGOCD_VERSION}..."
 kubectl apply --server-side --force-conflicts -n argocd \
   -f "https://raw.githubusercontent.com/argoproj/argo-cd/${ARGOCD_VERSION}/manifests/install.yaml"
 
+# Argo CD repo-server performs a self gRPC check for /healthz?full=true.
+# Disable gRPC DNS TXT service-config lookups so slow DNS cannot make the
+# liveness probe time out and restart an otherwise healthy repo-server.
+echo "==> Configuring stable repo-server health checks..."
+kubectl patch configmap argocd-cmd-params-cm -n argocd --type merge \
+  -p '{"data":{"reposerver.grpc.enable.txt.service.config":"false"}}'
+kubectl rollout restart deployment/argocd-repo-server -n argocd
+
 echo "==> Waiting for Argo CD..."
 kubectl wait --for=condition=Established \
   crd/applications.argoproj.io \
   --timeout=120s
+
+kubectl rollout status deployment/argocd-repo-server \
+  -n argocd --timeout=300s
 
 kubectl wait --for=condition=Ready pod \
   -n argocd \
