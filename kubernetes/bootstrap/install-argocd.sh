@@ -46,14 +46,20 @@ kubectl patch configmap argocd-cmd-params-cm -n argocd --type merge \
   -p '{"data":{"reposerver.grpc.enable.txt.service.config":"false"}}'
 kubectl rollout restart deployment/argocd-repo-server -n argocd
 
-echo "==> Waiting for Argo CD..."
-kubectl rollout status deployment/argocd-repo-server \
-  -n argocd --timeout=300s
+echo "==> Waiting for Argo CD workloads..."
+for deployment in \
+  argocd-applicationset-controller \
+  argocd-dex-server \
+  argocd-notifications-controller \
+  argocd-redis \
+  argocd-repo-server \
+  argocd-server; do
+  kubectl rollout status "deployment/${deployment}" \
+    -n argocd --timeout=300s
+done
 
-kubectl wait --for=condition=Ready pod \
-  -n argocd \
-  -l app.kubernetes.io/part-of=argocd \
-  --timeout=300s
+kubectl rollout status statefulset/argocd-application-controller \
+  -n argocd --timeout=300s
 
 kubectl get applications -n argocd
 
