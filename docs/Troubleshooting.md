@@ -1,21 +1,26 @@
 # CI/CD & Kubernetes Manifest Troubleshooting Guide
 
-This document details historical configuration issues, root causes, and technical resolutions for the GitOps CI/CD pipeline defined in `.github/workflows/k3s-ci.yml`[cite: 1].
+This document details historical configuration issues, root causes, and technical resolutions for the GitOps CI/CD pipeline defined in `.github/workflows/k3s-ci.yml`.
+
+For the full September 7, 2026 K3s/Calico/Argo CD bootstrap investigation, including the complete timeline, ruled-out hypotheses, kubeconfig recovery, Argo CD startup sequencing, and final verification state, see [Bootstrap-Incident-2026-09-07.md](Bootstrap-Incident-2026-09-07.md).
 
 ## Summary of Issues & Fixes
 
 | Incident | Severity | Root Cause | Technical Resolution |
 | :--- | :--- | :--- | :--- |
 | **Missing CRD Schemas** | High | `kubeconform` lacks built-in schemas for Custom Resources (`IPPool`, `ClusterIssuer`, `Application`). | Integrated `datreeio/CRDs-catalog` schema location and added `-ignore-missing-schemas`. |
-| **Helm Values Parsing Failure** | High | `kubeconform` attempted to validate Helm `values.yaml` files as raw Kubernetes API manifests. | Separated repo into `kubernetes/helm/` (values)[cite: 1] and `kubernetes/manifests/` (raw manifests)[cite: 1]. |
+| **Helm Values Parsing Failure** | High | `kubeconform` attempted to validate Helm `values.yaml` files as raw Kubernetes API manifests. | Separated repo into `kubernetes/helm/` for values and `kubernetes/manifests/` for raw manifests. |
 | **Action Resolution Failure** | Medium | `yannh/kubeconform-action` failed to resolve on GitHub Actions runners. | Replaced action with direct binary download (`curl`) in the runner environment. |
-| **Traefik Values Schema Error** | High | Unpinned Helm chart versions evaluated against updated upstream schema breaking `redirectTo` & `tls` keys. | Aligned `values.yaml` syntax and pinned chart versions dynamically via ArgoCD `targetRevision` specs. |
-| **Script Parsing Failures** | High | `jq` crashed on scalar strings and `yq` passed YAML document separators (`---`) as chart names. | Updated rendering step to `yq eval-all -N` with token filtering inside the bash loop. |
+| **Traefik Values Schema Error** | High | Unpinned Helm chart versions evaluated against updated upstream schema breaking `redirectTo` and `tls` keys. | Aligned `values.yaml` syntax and pinned chart versions dynamically via Argo CD `targetRevision` specs. |
+| **Script Parsing Failures** | High | `jq` crashed on scalar strings and `yq` passed YAML document separators (`---`) as chart names. | Updated rendering step to `yq eval-all -N` with token filtering inside the Bash loop. |
 | **Trivy Security Scan Failures** | High | `unbound.yaml` failed security checks (`KSV-0014`, `KSV-0118`) due to unconfigured security contexts. | Added non-root `securityContext`, dropped capabilities, enabled `readOnlyRootFilesystem`, and added `/tmp` `emptyDir`. |
 | **Workflow Execution Filtering** | Low | Pipeline did not trigger on custom feature or test branches. | Updated `on.push.branches` filters and added `workflow_dispatch` for manual UI triggers. |
 | **Fresh-cluster DNS startup** | High | Pi-hole and Unbound were reconciled together, and DHCP used the string value `"false"`, which Helm can evaluate as enabled. | Start Pi-hole after Unbound, use a boolean `false`, and expose Unbound readiness/liveness checks. |
-| **CoreDNS upstream reset** | High | The CoreDNS ConfigMap was edited manually, so a fresh K3s install did not contain the public upstream resolvers. | Apply K3s's supported `coredns-custom` override during bootstrap with Cloudflare (`1.1.1.1`) and Google (`8.8.8.8`) DNS. |
+| **CoreDNS upstream reset** | High | The CoreDNS ConfigMap was edited manually, so a fresh K3s install did not contain the public upstream resolvers. | Apply the supported CoreDNS configuration during bootstrap instead of relying on manual edits. |
 | **Single-node Calico UDP Service failure** | Critical | With VXLAN enabled, the live Calico v3.32.1 iptables dataplane installed a blanket UDP `NOTRACK` rule in raw `cali-PREROUTING`, causing UDP Kubernetes Service traffic to bypass normal conntrack/NAT handling. | For this repository's single-node K3s topology, set Calico `encapsulation: None`, keep `containerIPForwarding: Enabled` and `natOutgoing: Enabled`, restart `calico-node`, and require the network acceptance test to pass before Argo CD/workloads are installed. |
+| **Normal-user kubeconfig unavailable** | High | `install-argocd.sh` correctly refused root execution, but the normal user's kubeconfig was missing or stale even though root K3s access worked. | Refresh `~/.kube/config` from `/etc/rancher/k3s/k3s.yaml` with user ownership; keep the Argo CD installer non-root. |
+| **Argo CD readiness false failure** | Medium | A broad pod label selector matched no Argo CD pods even though every workload was already running. | Wait explicitly for the six Argo CD Deployments and the application-controller StatefulSet. |
+| **root-app temporary `Unknown` state** | Medium | The application-controller reconciled before repo-server and Redis had fully become reachable, producing transient `connection refused` errors. | Wait for Argo CD workloads, inspect conditions/logs, then hard-refresh the root Application after the components are healthy. `root-app` subsequently converged to `Synced/Healthy`. |
 
 ---
 
@@ -218,19 +223,72 @@ Do not continue to Argo CD or application workloads unless all six checks pass.
 
 ---
 
+## Argo CD Bootstrap Notes
+
+### Run as the normal user
+
+`install-argocd.sh` intentionally refuses root execution. If normal-user API access fails while `sudo kubectl` works, refresh the user kubeconfig instead of running the whole installer with `sudo`:
+
+```bash
+mkdir -p "$HOME/.kube"
+sudo install -m 600 -o "$(id -u)" -g "$(id -g)" \
+  /etc/rancher/k3s/k3s.yaml "$HOME/.kube/config"
+export KUBECONFIG="$HOME/.kube/config"
+```
+
+Then run:
+
+```bash
+bash kubernetes/bootstrap/install-argocd.sh
+```
+
+### Temporary startup-time `ComparisonError`
+
+A freshly installed Argo CD may briefly show:
+
+```text
+root-app   Unknown   Healthy
+```
+
+If the Application condition shows `connection refused` to repo-server port `8081`, and application-controller logs simultaneously show Redis connection failures, first verify that the Argo CD workloads are all ready. This can be a startup-order race rather than a persistent network problem.
+
+Once repo-server and Redis are healthy, request a hard refresh:
+
+```bash
+sudo kubectl annotate application root-app \
+  -n argocd \
+  argocd.argoproj.io/refresh=hard \
+  --overwrite
+```
+
+A transition from `Unknown` to `OutOfSync` is positive: Git comparison is working. The desired final root state is:
+
+```text
+root-app   Synced   Healthy
+```
+
+The App-of-Apps children may remain `Progressing`, `OutOfSync`, or temporarily `Unknown` while each application converges independently.
+
+---
+
 ## Architecture Guidelines & Guardrails
 
 ### 1. Directory Structure Separation
+
 To prevent linter collisions across tools, keep files partitioned by role:
-* **`kubernetes/helm/`**: Contains key-value Helm override files[cite: 1]. Checked via `yamllint`[cite: 1] and `helm template`.
-* **`kubernetes/manifests/`**: Contains raw Kubernetes API objects[cite: 1]. Checked via `kubeconform` with `-strict`.
-* **`kubernetes/argocd-apps/`**: Contains ArgoCD application manifests[cite: 1]. Checked via `kubeconform` and auto-parsed for Helm rendering checks.
+
+- **`kubernetes/helm/`**: Contains key-value Helm override files. Checked via `yamllint` and `helm template`.
+- **`kubernetes/manifests/`**: Contains raw Kubernetes API objects. Checked via `kubeconform` with `-strict`.
+- **`kubernetes/argocd-apps/`**: Contains Argo CD application manifests. Checked via `kubeconform` and auto-parsed for Helm rendering checks.
 
 ### 2. Container Security Requirements
-All workloads in `kubernetes/manifests/`[cite: 1] must pass Trivy security checks by defining explicit security contexts:
-* **Pod Level**: Set `runAsNonRoot: true`, non-zero `runAsUser`/`runAsGroup` IDs, and `seccompProfile.type: RuntimeDefault`.
-* **Container Level**: Set `allowPrivilegeEscalation: false`, `readOnlyRootFilesystem: true`, and drop `ALL` capabilities.
-* **Storage Handling**: Mount an `emptyDir` volume to temporary write directories (such as `/tmp`) when `readOnlyRootFilesystem: true` is active.
+
+All workloads in `kubernetes/manifests/` must pass Trivy security checks by defining explicit security contexts:
+
+- **Pod Level**: Set `runAsNonRoot: true`, non-zero `runAsUser`/`runAsGroup` IDs, and `seccompProfile.type: RuntimeDefault`.
+- **Container Level**: Set `allowPrivilegeEscalation: false`, `readOnlyRootFilesystem: true`, and drop `ALL` capabilities.
+- **Storage Handling**: Mount an `emptyDir` volume to temporary write directories such as `/tmp` when `readOnlyRootFilesystem: true` is active.
 
 ### 3. Automated Helm Render Validation
-The CI pipeline automatically parses ArgoCD manifests under `kubernetes/argocd-apps/`[cite: 1] using `yq` to extract chart names, repositories, and versions. Any newly added ArgoCD application will be automatically rendered and validated without modifying `.github/workflows/k8s-ci.yml`[cite: 1].
+
+The CI pipeline automatically parses Argo CD manifests under `kubernetes/argocd-apps/` using `yq` to extract chart names, repositories, and versions. Any newly added Argo CD application will be automatically rendered and validated without modifying `.github/workflows/k3s-ci.yml`.
