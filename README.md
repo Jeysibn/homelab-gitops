@@ -26,6 +26,8 @@ A GitOps-driven local Kubernetes homelab using **Terraform**, **K3s**, **Calico*
 
 See [docs/Service-Catalog.md](docs/Service-Catalog.md) for service URLs and [docs/Proxmox-Environment.md](docs/Proxmox-Environment.md) for the homelab inventory.
 
+For the complete September 7, 2026 fresh-bootstrap investigation and runbook, see [docs/Bootstrap-Incident-2026-09-07.md](docs/Bootstrap-Incident-2026-09-07.md).
+
 ## ⚙️ GitOps Workflow
 
 1. Make changes on `dev`.
@@ -72,7 +74,7 @@ Changing the Calico pool to `encapsulation: None`, reconciling the operator, and
 
 For a future **multi-node** deployment, do not automatically reuse this assumption. Re-evaluate whether encapsulation is required for the node/subnet topology and validate the generated Calico and kube-proxy rules before enabling VXLAN.
 
-See [docs/Troubleshooting.md](docs/Troubleshooting.md) for the full incident details and verification commands.
+See [docs/Troubleshooting.md](docs/Troubleshooting.md) for the troubleshooting summary and [docs/Bootstrap-Incident-2026-09-07.md](docs/Bootstrap-Incident-2026-09-07.md) for the complete incident record.
 
 ## 🚀 Fresh Bootstrap
 
@@ -118,6 +120,19 @@ bash kubernetes/bootstrap/install-argocd.sh
 
 The scripts resolve their manifest and helper paths from the directory where the scripts themselves are stored, so they do not depend on your current working directory.
 
+### Normal-user kubeconfig requirement
+
+The Argo CD installer intentionally refuses root execution. If `sudo kubectl` works but `bash kubernetes/bootstrap/install-argocd.sh` reports that the Kubernetes API is unreachable, refresh the normal user's kubeconfig:
+
+```bash
+mkdir -p "$HOME/.kube"
+sudo install -m 600 -o "$(id -u)" -g "$(id -g)" \
+  /etc/rancher/k3s/k3s.yaml "$HOME/.kube/config"
+export KUBECONFIG="$HOME/.kube/config"
+```
+
+Then rerun the Argo CD stage without `sudo`.
+
 ## ✅ Bootstrap Safety Checks
 
 The K3s bootstrap keeps only the checks required for a predictable fresh installation:
@@ -132,7 +147,7 @@ The K3s bootstrap keeps only the checks required for a predictable fresh install
 The separate acceptance test verifies pod routing, Service ClusterIP routing, CoreDNS, Kubernetes service discovery, and external GitHub DNS:
 
 ```bash
-bash kubernetes/bootstrap/verify-cluster-network.sh
+sudo bash kubernetes/bootstrap/verify-cluster-network.sh
 ```
 
 Recovery logic is intentionally kept outside the normal fresh bootstrap. For an old cluster with stale Calico IPAM state, inspect it separately with:
@@ -146,11 +161,19 @@ bash kubernetes/bootstrap/recover-calico-ipam.sh --plan
 After bootstrap:
 
 ```bash
-kubectl get nodes
-kubectl get pods -A -o wide
-kubectl get applications -n argocd
-kubectl get svc -A | grep LoadBalancer
+sudo kubectl get nodes
+sudo kubectl get pods -A -o wide
+sudo kubectl get applications -n argocd
+sudo kubectl get svc -A | grep LoadBalancer
 ```
+
+The desired root Argo CD state after convergence is:
+
+```text
+root-app   Synced   Healthy
+```
+
+A temporary `root-app Unknown` immediately after Argo CD startup can occur if the application-controller reconciles before repo-server or Redis is fully reachable. Inspect the Application conditions and Argo CD component logs before treating this as another cluster-network failure. Once the components are healthy, a hard refresh can force a new comparison.
 
 Argo CD's root application points to `main`, so GitOps-managed services are reconciled from the production branch.
 
