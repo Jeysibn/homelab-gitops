@@ -11,9 +11,9 @@ data:
   # `monikey-secrets` Secret created out-of-band — see README.md.
   NODE_ENV: "production"
   API_PORT: "3000"
-  APP_ORIGIN: "https://monikey.homelab.local"
+  APP_ORIGIN: "http://monikey.homelab.local"
   APP_TIMEZONE: "Asia/Manila"
-  SESSION_SECURE: "true"
+  SESSION_SECURE: "false"
   SESSION_TTL_DAYS: "30"
   LOG_LEVEL: "info"
   ALLOW_TEST_CLOCK: "false"
