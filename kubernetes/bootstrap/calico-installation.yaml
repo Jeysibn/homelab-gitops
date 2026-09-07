@@ -6,6 +6,7 @@ metadata:
   name: default
 spec:
   calicoNetwork:
+    containerIPForwarding: Enabled
     ipPools:
       - name: default-ipv4-ippool
         blockSize: 26
