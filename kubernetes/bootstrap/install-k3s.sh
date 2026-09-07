@@ -84,20 +84,42 @@ sudo sysctl -q -w net.ipv4.ip_forward=1
 sudo sysctl -q -w net.bridge.bridge-nf-call-iptables=1
 sudo sysctl -q -w net.bridge.bridge-nf-call-ip6tables=1
 
-echo "==> Installing K3s ${K3S_VERSION}..."
-curl -sfL https://get.k3s.io | sudo env INSTALL_K3S_VERSION="$K3S_VERSION" sh -s - server \
-  --cluster-cidr="$CLUSTER_CIDR" \
-  --service-cidr="$SERVICE_CIDR" \
-  --cluster-dns="$CLUSTER_DNS_IP" \
-  --resolv-conf="$RESOLV_CONF" \
-  --flannel-backend=none \
-  --disable-network-policy \
-  --disable=servicelb \
-  --disable=traefik \
-  --disable=local-storage
+K3S_ALREADY_RUNNING=false
+if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet k3s; then
+  K3S_ALREADY_RUNNING=true
+fi
+
+if [[ "$K3S_ALREADY_RUNNING" == true ]]; then
+  echo "==> Existing K3s service detected; validating instead of reinstalling..."
+  K3S_UNIT="$(systemctl cat k3s 2>/dev/null || true)"
+  for expected_arg in \
+    "--cluster-cidr=$CLUSTER_CIDR" \
+    "--service-cidr=$SERVICE_CIDR" \
+    "--cluster-dns=$CLUSTER_DNS_IP" \
+    "--flannel-backend=none" \
+    "--disable-network-policy"; do
+    grep -Fq -- "$expected_arg" <<<"$K3S_UNIT" || {
+      echo "ERROR: Existing K3s service is missing expected argument: $expected_arg" >&2
+      echo "Refusing to mutate an existing cluster from the bootstrap script." >&2
+      exit 1
+    }
+  done
+else
+  echo "==> Installing K3s ${K3S_VERSION}..."
+  curl -sfL https://get.k3s.io | sudo env INSTALL_K3S_VERSION="$K3S_VERSION" sh -s - server \
+    --cluster-cidr="$CLUSTER_CIDR" \
+    --service-cidr="$SERVICE_CIDR" \
+    --cluster-dns="$CLUSTER_DNS_IP" \
+    --resolv-conf="$RESOLV_CONF" \
+    --flannel-backend=none \
+    --disable-network-policy \
+    --disable=servicelb \
+    --disable=traefik \
+    --disable=local-storage
+fi
 
 command -v kubectl >/dev/null 2>&1 || {
-  echo "ERROR: K3s installed but kubectl is not available in PATH." >&2
+  echo "ERROR: K3s is present but kubectl is not available in PATH." >&2
   exit 1
 }
 
@@ -116,9 +138,13 @@ for attempt in {1..60}; do
   sleep 2
 done
 
-echo "==> Installing Calico ${CALICO_VERSION}..."
-kubectl apply --server-side --force-conflicts \
-  -f "https://raw.githubusercontent.com/projectcalico/calico/${CALICO_VERSION}/manifests/tigera-operator.yaml"
+if kubectl get deployment/tigera-operator -n tigera-operator >/dev/null 2>&1; then
+  echo "==> Existing Tigera operator detected; skipping operator re-apply."
+else
+  echo "==> Installing Calico ${CALICO_VERSION} operator..."
+  kubectl apply --server-side --force-conflicts \
+    -f "https://raw.githubusercontent.com/projectcalico/calico/${CALICO_VERSION}/manifests/tigera-operator.yaml"
+fi
 
 # The Tigera operator creates its CRDs asynchronously when it starts.
 kubectl rollout status deployment/tigera-operator \
@@ -134,7 +160,30 @@ kubectl wait --for=condition=Established \
   crd/apiservers.operator.tigera.io \
   --timeout=180s
 
-kubectl apply -f "$CALICO_CONFIG"
+if kubectl get installation.operator.tigera.io/default >/dev/null 2>&1; then
+  EXISTING_CALICO_CIDR="$(kubectl get installation.operator.tigera.io/default \
+    -o jsonpath='{.spec.calicoNetwork.ipPools[0].cidr}')"
+  [[ "$EXISTING_CALICO_CIDR" == "$CLUSTER_CIDR" ]] || {
+    echo "ERROR: Existing Calico CIDR $EXISTING_CALICO_CIDR does not match $CLUSTER_CIDR." >&2
+    echo "Refusing to re-render an existing Calico installation from bootstrap." >&2
+    exit 1
+  }
+  echo "==> Existing Calico Installation is compatible; skipping re-apply."
+else
+  echo "==> Creating Calico Installation..."
+  kubectl apply -f "$CALICO_CONFIG"
+fi
+
+if ! kubectl get apiserver.operator.tigera.io/default >/dev/null 2>&1; then
+  echo "==> Creating Calico API server resource..."
+  cat <<'EOF' | kubectl apply -f -
+apiVersion: operator.tigera.io/v1
+kind: APIServer
+metadata:
+  name: default
+spec: {}
+EOF
+fi
 
 kubectl wait --for=create daemonset/calico-node \
   -n calico-system --timeout=300s
