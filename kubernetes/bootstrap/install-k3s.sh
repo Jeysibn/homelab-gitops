@@ -80,7 +80,9 @@ net.ipv4.ip_forward = 1
 net.bridge.bridge-nf-call-iptables = 1
 net.bridge.bridge-nf-call-ip6tables = 1
 EOF
-sudo sysctl --system >/dev/null
+sudo sysctl -q -w net.ipv4.ip_forward=1
+sudo sysctl -q -w net.bridge.bridge-nf-call-iptables=1
+sudo sysctl -q -w net.bridge.bridge-nf-call-ip6tables=1
 
 echo "==> Installing K3s ${K3S_VERSION}..."
 curl -sfL https://get.k3s.io | sudo env INSTALL_K3S_VERSION="$K3S_VERSION" sh -s - server \
@@ -118,13 +120,19 @@ echo "==> Installing Calico ${CALICO_VERSION}..."
 kubectl apply --server-side --force-conflicts \
   -f "https://raw.githubusercontent.com/projectcalico/calico/${CALICO_VERSION}/manifests/tigera-operator.yaml"
 
-kubectl wait --for=condition=Established \
+# The Tigera operator creates its CRDs asynchronously when it starts.
+kubectl rollout status deployment/tigera-operator \
+  -n tigera-operator --timeout=300s
+
+kubectl wait --for=create \
   crd/installations.operator.tigera.io \
   crd/apiservers.operator.tigera.io \
   --timeout=180s
 
-kubectl rollout status deployment/tigera-operator \
-  -n tigera-operator --timeout=300s
+kubectl wait --for=condition=Established \
+  crd/installations.operator.tigera.io \
+  crd/apiservers.operator.tigera.io \
+  --timeout=180s
 
 kubectl apply -f "$CALICO_CONFIG"
 
