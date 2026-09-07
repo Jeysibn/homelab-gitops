@@ -5,6 +5,12 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 ARGOCD_VERSION="v3.5.1"
 ROOT_APP="$SCRIPT_DIR/root-app.yaml"
 
+if (( EUID == 0 )); then
+  echo "ERROR: Run this script as your normal user, not with sudo." >&2
+  echo "Use: bash $SCRIPT_DIR/install-argocd.sh" >&2
+  exit 1
+fi
+
 command -v kubectl >/dev/null 2>&1 || {
   echo "ERROR: kubectl is not available. Install K3s first." >&2
   exit 1
@@ -15,17 +21,34 @@ command -v kubectl >/dev/null 2>&1 || {
   exit 1
 }
 
+kubectl get --raw=/readyz >/dev/null 2>&1 || {
+  echo "ERROR: Kubernetes API is not reachable with the current kubeconfig." >&2
+  exit 1
+}
+
+echo "==> Bootstrap directory: $SCRIPT_DIR"
 echo "==> Creating Argo CD namespace..."
 kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
 
 echo "==> Installing Argo CD ${ARGOCD_VERSION}..."
-kubectl apply -n argocd \
+kubectl apply --server-side --force-conflicts -n argocd \
   -f "https://raw.githubusercontent.com/argoproj/argo-cd/${ARGOCD_VERSION}/manifests/install.yaml"
+
+# Argo CD repo-server performs a self gRPC check for /healthz?full=true.
+# Disable gRPC DNS TXT service-config lookups so slow DNS cannot make the
+# liveness probe time out and restart an otherwise healthy repo-server.
+echo "==> Configuring stable repo-server health checks..."
+kubectl patch configmap argocd-cmd-params-cm -n argocd --type merge \
+  -p '{"data":{"reposerver.grpc.enable.txt.service.config":"false"}}'
+kubectl rollout restart deployment/argocd-repo-server -n argocd
 
 echo "==> Waiting for Argo CD..."
 kubectl wait --for=condition=Established \
   crd/applications.argoproj.io \
   --timeout=120s
+
+kubectl rollout status deployment/argocd-repo-server \
+  -n argocd --timeout=300s
 
 kubectl wait --for=condition=Ready pod \
   -n argocd \
@@ -35,8 +58,6 @@ kubectl wait --for=condition=Ready pod \
 echo "==> Applying root application..."
 kubectl apply -f "$ROOT_APP"
 
-echo
-kubectl get pods -n argocd
 kubectl get applications -n argocd
 
-echo "==> Argo CD bootstrap complete!"
+echo "==> Argo CD bootstrap complete"
