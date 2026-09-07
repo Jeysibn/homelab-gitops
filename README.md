@@ -26,6 +26,8 @@ A GitOps-driven local Kubernetes homelab using **Terraform**, **K3s**, **Calico*
 
 See [docs/Service-Catalog.md](docs/Service-Catalog.md) for service URLs and [docs/Proxmox-Environment.md](docs/Proxmox-Environment.md) for the homelab inventory.
 
+For the complete September 7, 2026 fresh-bootstrap investigation and runbook, see [docs/Bootstrap-Incident-2026-09-07.md](docs/Bootstrap-Incident-2026-09-07.md).
+
 ## ⚙️ GitOps Workflow
 
 1. Make changes on `dev`.
@@ -34,6 +36,45 @@ See [docs/Service-Catalog.md](docs/Service-Catalog.md) for service URLs and [doc
 4. Argo CD reconciles the cluster from `main`.
 
 Calico is bootstrap-owned because Argo CD requires a working CNI before it can operate.
+
+## ⚠️ Required Calico Setting for the Single-Node K3s Topology
+
+This repository currently deploys K3s as a **single-node cluster**. For this topology, Calico **must keep overlay encapsulation disabled**:
+
+```yaml
+spec:
+  calicoNetwork:
+    containerIPForwarding: Enabled
+    ipPools:
+      - cidr: 10.42.0.0/16
+        encapsulation: None
+        natOutgoing: Enabled
+```
+
+Do **not** change this single-node deployment back to `VXLANCrossSubnet` or another VXLAN mode without revalidating the network dataplane.
+
+During the September 2026 bootstrap investigation, Calico v3.32.1 with VXLAN enabled installed a live raw-table rule equivalent to:
+
+```text
+-p udp -j NOTRACK
+```
+
+The rule matched all UDP traffic instead of only VXLAN UDP/4789. Because kube-proxy was running in iptables mode, UDP Kubernetes Service NAT depended on conntrack. The blanket `NOTRACK` rule caused UDP Service traffic such as CoreDNS `10.43.0.10:53` to bypass normal conntrack/NAT handling.
+
+Observed behavior:
+
+- Pod-to-pod routing worked.
+- TCP ClusterIP routing worked.
+- Direct DNS to the CoreDNS pod IP worked.
+- TCP to the CoreDNS ClusterIP worked.
+- UDP to the CoreDNS ClusterIP failed.
+- External UDP DNS from pods failed.
+
+Changing the Calico pool to `encapsulation: None`, reconciling the operator, and restarting `calico-node` removed the blanket UDP `NOTRACK` rule. The cluster network acceptance test then passed all pod routing, Service, internal DNS, and external DNS checks.
+
+For a future **multi-node** deployment, do not automatically reuse this assumption. Re-evaluate whether encapsulation is required for the node/subnet topology and validate the generated Calico and kube-proxy rules before enabling VXLAN.
+
+See [docs/Troubleshooting.md](docs/Troubleshooting.md) for the troubleshooting summary and [docs/Bootstrap-Incident-2026-09-07.md](docs/Bootstrap-Incident-2026-09-07.md) for the complete incident record.
 
 ## 🚀 Fresh Bootstrap
 
@@ -79,6 +120,19 @@ bash kubernetes/bootstrap/install-argocd.sh
 
 The scripts resolve their manifest and helper paths from the directory where the scripts themselves are stored, so they do not depend on your current working directory.
 
+### Normal-user kubeconfig requirement
+
+The Argo CD installer intentionally refuses root execution. If `sudo kubectl` works but `bash kubernetes/bootstrap/install-argocd.sh` reports that the Kubernetes API is unreachable, refresh the normal user's kubeconfig:
+
+```bash
+mkdir -p "$HOME/.kube"
+sudo install -m 600 -o "$(id -u)" -g "$(id -g)" \
+  /etc/rancher/k3s/k3s.yaml "$HOME/.kube/config"
+export KUBECONFIG="$HOME/.kube/config"
+```
+
+Then rerun the Argo CD stage without `sudo`.
+
 ## ✅ Bootstrap Safety Checks
 
 The K3s bootstrap keeps only the checks required for a predictable fresh installation:
@@ -93,7 +147,7 @@ The K3s bootstrap keeps only the checks required for a predictable fresh install
 The separate acceptance test verifies pod routing, Service ClusterIP routing, CoreDNS, Kubernetes service discovery, and external GitHub DNS:
 
 ```bash
-bash kubernetes/bootstrap/verify-cluster-network.sh
+sudo bash kubernetes/bootstrap/verify-cluster-network.sh
 ```
 
 Recovery logic is intentionally kept outside the normal fresh bootstrap. For an old cluster with stale Calico IPAM state, inspect it separately with:
@@ -107,11 +161,19 @@ bash kubernetes/bootstrap/recover-calico-ipam.sh --plan
 After bootstrap:
 
 ```bash
-kubectl get nodes
-kubectl get pods -A -o wide
-kubectl get applications -n argocd
-kubectl get svc -A | grep LoadBalancer
+sudo kubectl get nodes
+sudo kubectl get pods -A -o wide
+sudo kubectl get applications -n argocd
+sudo kubectl get svc -A | grep LoadBalancer
 ```
+
+The desired root Argo CD state after convergence is:
+
+```text
+root-app   Synced   Healthy
+```
+
+A temporary `root-app Unknown` immediately after Argo CD startup can occur if the application-controller reconciles before repo-server or Redis is fully reachable. Inspect the Application conditions and Argo CD component logs before treating this as another cluster-network failure. Once the components are healthy, a hard refresh can force a new comparison.
 
 Argo CD's root application points to `main`, so GitOps-managed services are reconciled from the production branch.
 
