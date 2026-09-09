@@ -25,7 +25,7 @@ data:
   QUOTE_PROVIDER: "stub"
   FX_PROVIDER: "stub"
   EMAIL_PROVIDER: "resend"
-  OCR_PROVIDER: "ocrspace"
+  OCR_PROVIDER: "tesseract"
   AI_PROVIDER: "stub"
   BANK_PROVIDER: "stub"
   PLAID_ENV: "sandbox"
