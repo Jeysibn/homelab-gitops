@@ -9,6 +9,7 @@ defaultSettings:
   defaultDataPath: /var/lib/longhorn
   replicaAutoBalance: disabled
   storageMinimalAvailablePercentage: 15
+  storageOverProvisioningPercentage: 150
   # This is a single-node cluster. Create the default disk automatically on
   # the node instead of requiring the Kubernetes node label
   # node.longhorn.io/create-default-disk=true.
