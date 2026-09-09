@@ -55,6 +55,11 @@ spec:
                 secretKeyRef:
                   name: monikey-secrets
                   key: RESEND_API_KEY
+            - name: OCRSPACE_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: monikey-secrets
+                  key: OCRSPACE_API_KEY
           resources:
             requests:
               cpu: 100m
