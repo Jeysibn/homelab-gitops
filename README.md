@@ -35,6 +35,53 @@ For the complete September 7, 2026 fresh-bootstrap investigation and runbook, se
 3. Merge `dev` into `main`.
 4. Argo CD reconciles the cluster from `main`.
 
+### Manually sync Argo CD from GitHub Actions
+
+The **Argo CD Sync** workflow runs only when you click **Run workflow**. It joins
+Tailscale using the existing Terraform CI credentials, refreshes the selected
+application, syncs its configured sources, and waits for `Synced` and `Healthy`.
+The CLI version matches the bootstrap installer (`v3.5.1`).
+
+Configure these under **Settings → Secrets and variables → Actions**:
+
+| Kind | Name | Value |
+| --- | --- | --- |
+| Secret | `TS_OAUTH_CLIENT_ID` | Existing Tailscale OAuth client ID |
+| Secret | `TS_OAUTH_SECRET` | Existing Tailscale OAuth secret authorized for `tag:ci` |
+| Secret | `ARGOCD_AUTH_TOKEN` | Argo CD API token with application `get` and `sync` permissions for the intended applications |
+| Secret | `ARGOCD_SERVER` | Tailnet-reachable Argo CD API address as `hostname:port`, without `https://` |
+
+The bootstrap installs Argo CD with its default ClusterIP service; joining
+Tailscale alone does not expose that service. First provide an HTTPS endpoint
+through a tailnet proxy, ingress, or an exposed service reachable through your
+Tailscale subnet router. Allow `tag:ci` to reach that endpoint in the tailnet
+policy. The workflow accepts advertised subnet routes; a `*.homelab.local` name
+also needs DNS resolution on the runner. Use a tailnet DNS name or routed IP
+if your LAN DNS is unavailable.
+
+Create a dedicated Argo CD API account/token rather than storing an admin
+password. Its RBAC policy needs `applications, get` and `applications, sync`
+for each target (for example, `default/monikey`). See the
+[Argo CD local account and RBAC setup](https://argo-cd.readthedocs.io/en/stable/operator-manual/user-management/).
+Store the token directly as `ARGOCD_AUTH_TOKEN`; the workflow uses token
+authentication without an interactive login.
+
+After merging this workflow into `main`, open **Actions → Argo CD Sync → Run
+workflow**, select **main**, enter an application name such as `monikey`, and
+run it. `root-app` updates the child Application definitions; it does not
+recursively force-sync or wait for every child's workloads. Run the workflow
+for the child application when you need to force its deployment. Existing
+automatic reconciliation remains enabled for the root and child applications.
+
+The workflow uses each application's configured target revision (`main` for
+this repository's manifests, pinned chart versions for Helm applications).
+It does not deploy the branch selected in the Actions UI; non-`main` runs are
+skipped. Enable **prune** to request deletion of obsolete resources, or
+**insecure** only when your private Argo CD endpoint uses a self-signed
+certificate. Both default to false. Existing automated prune policies still
+apply independently. Cluster sync runs are serialized and have bounded waits;
+a failed or timed-out run does not roll back or cancel a server-side sync.
+
 Calico is bootstrap-owned because Argo CD requires a working CNI before it can operate.
 
 ## ⚠️ Required Calico Setting for the Single-Node K3s Topology
