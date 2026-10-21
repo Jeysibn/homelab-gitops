@@ -1,0 +1,96 @@
+name: Argo CD Sync
+
+on:
+  workflow_dispatch:
+    inputs:
+      application:
+        description: Argo CD application to sync (root-app updates application definitions)
+        required: true
+        type: string
+        default: root-app
+      prune:
+        description: Delete resources no longer defined in Git
+        type: boolean
+        default: false
+      insecure:
+        description: Skip TLS certificate verification for a self-signed Argo CD server
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# Serialize cluster changes without interrupting an active sync.
+concurrency:
+  group: argocd-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Sync Argo CD application
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    # Applications in this repository track main.
+    if: github.ref == 'refs/heads/main'
+    env:
+      ARGOCD_SERVER: ${{ secrets.ARGOCD_SERVER }}
+      ARGOCD_AUTH_TOKEN: ${{ secrets.ARGOCD_AUTH_TOKEN }}
+      APPLICATION: ${{ inputs.application }}
+      PRUNE: ${{ inputs.prune }}
+      INSECURE: ${{ inputs.insecure }}
+      ARGOCD_VERSION: v3.5.1
+
+    steps:
+      - name: Check configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          : "${ARGOCD_SERVER:?Set the ARGOCD_SERVER repository secret to host:port}"
+          : "${ARGOCD_AUTH_TOKEN:?Set the ARGOCD_AUTH_TOKEN repository secret}"
+          if [[ ! "$APPLICATION" =~ ^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$ ]]; then
+            echo '::error::Enter a single valid Argo CD application name.'
+            exit 1
+          fi
+
+      - name: Connect to Tailscale
+        uses: tailscale/github-action@v2
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
+          args: --accept-routes
+
+      - name: Install Argo CD CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_url="https://github.com/argoproj/argo-cd/releases/download/${ARGOCD_VERSION}"
+          cd "$RUNNER_TEMP"
+          curl --fail --silent --show-error --location --retry 3 \
+            "$release_url/argocd-linux-amd64" -o argocd-linux-amd64
+          curl --fail --silent --show-error --location --retry 3 \
+            "$release_url/cli_checksums.txt" -o cli_checksums.txt
+          awk '$2 == "argocd-linux-amd64" { print }' cli_checksums.txt > argocd.sha256
+          test -s argocd.sha256
+          sha256sum --check argocd.sha256
+          sudo install -m 0755 argocd-linux-amd64 /usr/local/bin/argocd
+          argocd version --client
+
+      - name: Refresh, sync, and wait for health
+        shell: bash
+        run: |
+          set -euo pipefail
+          flags=(--grpc-web)
+          if [[ "$INSECURE" == true ]]; then
+            flags+=(--insecure)
+          fi
+          sync_flags=()
+          if [[ "$PRUNE" == true ]]; then
+            sync_flags+=(--prune)
+          fi
+          argocd app get "$APPLICATION" --hard-refresh "${flags[@]}" > /dev/null
+          # An automated reconciliation may already be in progress.
+          argocd app wait "$APPLICATION" --operation --timeout 600 "${flags[@]}"
+          argocd app sync "$APPLICATION" --timeout 600 "${sync_flags[@]}" "${flags[@]}"
+          argocd app wait "$APPLICATION" --sync --health --operation --timeout 600 "${flags[@]}"
+          printf '### Argo CD sync completed\n\nApplication: `%s`\n' "$APPLICATION" >> "$GITHUB_STEP_SUMMARY"
