@@ -61,13 +61,13 @@ if your LAN DNS is unavailable.
 
 Create a dedicated Argo CD API account/token rather than storing an admin
 password. Its RBAC policy needs `applications, get` and `applications, sync`
-for each target (for example, `default/monikey`). See the
+for each target (for example, `default/<application>`). See the
 [Argo CD local account and RBAC setup](https://argo-cd.readthedocs.io/en/stable/operator-manual/user-management/).
 Store the token directly as `ARGOCD_AUTH_TOKEN`; the workflow uses token
 authentication without an interactive login.
 
 After merging this workflow into `main`, open **Actions → Argo CD Sync → Run
-workflow**, select **main**, enter an application name such as `monikey`, and
+workflow**, select **main**, enter the target application name, and
 run it. `root-app` updates the child Application definitions; it does not
 recursively force-sync or wait for every child's workloads. Run the workflow
 for the child application when you need to force its deployment. Existing
@@ -234,7 +234,6 @@ Traefik is the main HTTP/HTTPS entrypoint at `192.168.86.200`. Pi-hole provides 
 | Pi-hole | `pihole.homelab.local` |
 | Longhorn | `longhorn.homelab.local` |
 | Prometheus | `prometheus.homelab.local` |
-| MoniKey | `monikey.homelab.local` |
 
 ## 🔐 Secrets
 
