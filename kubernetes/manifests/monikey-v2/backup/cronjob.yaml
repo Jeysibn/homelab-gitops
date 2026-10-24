@@ -41,7 +41,7 @@ spec:
           containers:
             - name: backup
               # Replace with the immutable digest published from validated main.
-              image: ghcr.io/jeysibn/monikey-v2-backup@sha256:d719a6ee690760d3c7452c92f0f5fb81fad354a09792e9eb32402963e7f47900
+              image: ghcr.io/jeysibn/monikey-v2-backup@sha256:50371a86b4910d508a81e44db52cb645d9a75f84ecb0dd3e9957321763979577
               imagePullPolicy: IfNotPresent
               env:
                 - name: PGHOST
