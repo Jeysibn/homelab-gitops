@@ -1,0 +1,93 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: monikey-v2-postgres-backup
+  labels:
+    app.kubernetes.io/name: monikey-v2-postgres-backup
+    app.kubernetes.io/part-of: monikey-v2
+    app.kubernetes.io/component: backup
+spec:
+  schedule: "0 2 * * *"
+  timeZone: Etc/UTC
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 7200
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 4
+  jobTemplate:
+    metadata:
+      labels:
+        app.kubernetes.io/name: monikey-v2-postgres-backup
+        app.kubernetes.io/part-of: monikey-v2
+        app.kubernetes.io/component: backup
+    spec:
+      backoffLimit: 1
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: monikey-v2-postgres-backup
+            app.kubernetes.io/part-of: monikey-v2
+            app.kubernetes.io/component: backup
+        spec:
+          automountServiceAccountToken: false
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 70
+            runAsGroup: 70
+            fsGroup: 70
+            fsGroupChangePolicy: OnRootMismatch
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: backup
+              # Replace with the immutable digest published from validated main.
+              image: ghcr.io/jeysibn/monikey-v2-backup@sha256:d719a6ee690760d3c7452c92f0f5fb81fad354a09792e9eb32402963e7f47900
+              imagePullPolicy: IfNotPresent
+              env:
+                - name: PGHOST
+                  valueFrom:
+                    secretKeyRef:
+                      name: monikey-v2-postgres-client
+                      key: host
+                - name: PGPORT
+                  value: "5432"
+                - name: PGDATABASE
+                  valueFrom:
+                    secretKeyRef:
+                      name: monikey-v2-postgres-client
+                      key: database
+                - name: PGUSER
+                  valueFrom:
+                    secretKeyRef:
+                      name: monikey-v2-postgres-client
+                      key: username
+                - name: PGPASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: monikey-v2-postgres-client
+                      key: password
+                - name: BACKUP_ROOT
+                  value: /backups
+                - name: BACKUP_DAILY_RETENTION
+                  value: "7"
+                - name: BACKUP_WEEKLY_RETENTION
+                  value: "4"
+              resources:
+                requests:
+                  cpu: 100m
+                  memory: 128Mi
+                limits:
+                  cpu: "1"
+                  memory: 1Gi
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              volumeMounts:
+                - name: backup-data
+                  mountPath: /backups
+          volumes:
+            - name: backup-data
+              persistentVolumeClaim:
+                claimName: monikey-v2-backups
