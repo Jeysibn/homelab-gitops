@@ -131,14 +131,3 @@ applications:
     selfHeal: true
     sourceCount: 1
     finalizerCount: 1
-  - name: monikey-v2
-    repoURL: https://github.com/jeysibn/homelab-gitops.git
-    chart: ""
-    path: kubernetes/manifests/monikey-v2
-    targetRevision: main
-    namespace: monikey-v2
-    syncWave: "4"
-    prune: true
-    selfHeal: true
-    sourceCount: 1
-    finalizerCount: 1
