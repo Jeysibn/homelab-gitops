@@ -440,7 +440,6 @@ The App-of-Apps then created child Applications including:
 - Longhorn
 - MetalLB
 - MetalLB config
-- MoniKey
 - Pi-hole DNS
 - Prometheus
 - Traefik
