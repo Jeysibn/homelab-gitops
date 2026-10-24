@@ -1,0 +1,25 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: monikey-v2-postgres-traffic
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: monikey-v2-postgres
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: monikey-v2-api
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: monikey-v2-migrate
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: monikey-v2-postgres-backup
+      ports:
+        - protocol: TCP
+          port: 5432
