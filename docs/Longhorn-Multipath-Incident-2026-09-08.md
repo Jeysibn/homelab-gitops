@@ -14,7 +14,7 @@ MountVolume.MountDevice failed for volume "pvc-7d309d18-dc25-4ac7-97f5-6eeeb8d00
 /dev/longhorn/pvc-7d309d18-dc25-4ac7-97f5-6eeeb8d00faf is apparently in use by the system; will not make a filesystem here!
 ```
 
-This was the same failure mode previously observed with the MoniKey Postgres Longhorn volume.
+This was the same failure mode previously observed with another PostgreSQL Longhorn volume.
 
 ## Impact
 
@@ -147,12 +147,6 @@ For this incident the affected mapping was:
 mpatha -> /dev/sdg -> pvc-7d309d18-dc25-4ac7-97f5-6eeeb8d00faf
 ```
 
-A previous MoniKey Postgres incident used:
-
-```text
-mpathb -> /dev/sdh -> pvc-9d9972fe-4041-4838-9f07-49847b1755ef
-```
-
 ### 2. Confirm the mapping is not mounted
 
 Before removing a device-mapper mapping, verify that neither the raw device nor the mapper device is mounted:
@@ -270,7 +264,7 @@ multipathd.service: masked
 
 ## Known-Good Evidence After Recovery
 
-The previously affected MoniKey Postgres volume was observed mounted normally after multipath was disabled:
+The affected PostgreSQL volume was observed mounted normally after multipath was disabled:
 
 ```text
 /dev/sdh
