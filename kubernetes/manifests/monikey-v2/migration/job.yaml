@@ -1,0 +1,64 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: monikey-v2-migrate
+  labels:
+    app.kubernetes.io/name: monikey-v2-migrate
+    app.kubernetes.io/part-of: monikey-v2
+    app.kubernetes.io/component: migration
+  annotations:
+    # PostgreSQL wave 0 and validated backup hook wave 1 must finish first.
+    # API and web Deployments belong in waves 3 and 4 so a failed hook
+    # prevents their rollout.
+    argocd.argoproj.io/hook: Sync
+    argocd.argoproj.io/sync-wave: "2"
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 900
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: monikey-v2-migrate
+        app.kubernetes.io/part-of: monikey-v2
+        app.kubernetes.io/component: migration
+    spec:
+      automountServiceAccountToken: false
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: migrate
+          # Replace with the immutable GHCR digest from a validated main release.
+          image: ghcr.io/jeysibn/monikey-v2-migration@sha256:0af5c3c74d01a9330e5564477d805f03c5ac36e1533bdb1981f98d8a848df766
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: NODE_ENV
+              value: production
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: monikey-v2-runtime-secrets
+                  key: DATABASE_URL
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
