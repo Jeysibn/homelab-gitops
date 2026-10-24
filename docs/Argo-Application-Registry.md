@@ -14,7 +14,7 @@ The bootstrap path owns:
 - Calico IPPool (`10.42.0.0/16`)
 - CoreDNS bootstrap override and networking smoke tests
 
-The Argo registry starts above that layer and manages platform/application services such as Longhorn, MetalLB, cert-manager, Traefik, monitoring, DNS workloads, and MoniKey V2.
+The Argo registry starts above that layer and manages platform/application services such as Longhorn, MetalLB, cert-manager, Traefik, monitoring, and DNS workloads.
 
 Do not add a `calico-operator` Application here. CI explicitly rejects that configuration.
 
@@ -49,7 +49,6 @@ Non-Helm workloads remain readable templates under `templates/explicit-applicati
 - `metallb-config`
 - `cluster-issuer`
 - `unbound-dns`
-- `monikey-v2` — the V2 application and its isolated namespace/PVCs
 
 This keeps the registry focused on the repeated Helm-release shape without hiding raw-manifest behavior behind conventions.
 
