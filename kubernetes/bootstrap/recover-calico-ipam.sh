@@ -356,7 +356,7 @@ if kubectl get namespace argocd >/dev/null 2>&1; then
     kubectl rollout status deployment/argocd-repo-server -n argocd --timeout=180s
   fi
 
-  for app in root-app monikey; do
+  for app in root-app; do
     if kubectl get application "$app" -n argocd >/dev/null 2>&1; then
       kubectl annotate application "$app" -n argocd \
         argocd.argoproj.io/refresh=hard --overwrite
