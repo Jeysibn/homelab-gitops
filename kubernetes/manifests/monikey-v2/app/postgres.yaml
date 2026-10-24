@@ -1,0 +1,123 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  labels:
+    app.kubernetes.io/name: monikey-v2-postgres
+    app.kubernetes.io/part-of: monikey-v2
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  clusterIP: None
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
+  selector:
+    app.kubernetes.io/name: monikey-v2-postgres
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: monikey-v2-postgres
+  labels:
+    app.kubernetes.io/name: monikey-v2-postgres
+    app.kubernetes.io/part-of: monikey-v2
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: monikey-v2-postgres
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: monikey-v2-postgres
+        app.kubernetes.io/part-of: monikey-v2
+        app.kubernetes.io/component: database
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 60
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 70
+        runAsGroup: 70
+        fsGroup: 70
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: postgres
+          # Replace with the immutable digest published from validated main.
+          image: ghcr.io/jeysibn/monikey-v2-postgres@sha256:f256015353e8bbf7f5eb73743102f07ad24dc69b488263e700e47f7a3613c4a9
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: postgres
+              containerPort: 5432
+          env:
+            - name: POSTGRES_DB
+              value: monikey_v2
+            - name: POSTGRES_USER
+              value: monikey_v2
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: monikey-v2-runtime-secrets
+                  key: POSTGRES_PASSWORD
+            - name: POSTGRES_HOST_AUTH_METHOD
+              value: scram-sha-256
+            - name: POSTGRES_INITDB_ARGS
+              value: --data-checksums
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          startupProbe:
+            exec:
+              command: ["pg_isready", "-U", "monikey_v2", "-d", "monikey_v2"]
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 60
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "monikey_v2", "-d", "monikey_v2"]
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 6
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "monikey_v2", "-d", "monikey_v2"]
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+            - name: run
+              mountPath: /var/run/postgresql
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: monikey-v2-postgres-data
+        - name: run
+          emptyDir:
+            medium: Memory
+            sizeLimit: 16Mi
+        - name: tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 64Mi

@@ -1,0 +1,100 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: web
+  labels:
+    app.kubernetes.io/name: monikey-v2-web
+    app.kubernetes.io/part-of: monikey-v2
+  annotations:
+    argocd.argoproj.io/sync-wave: "4"
+spec:
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+  selector:
+    app.kubernetes.io/name: monikey-v2-web
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: monikey-v2-web
+  labels:
+    app.kubernetes.io/name: monikey-v2-web
+    app.kubernetes.io/part-of: monikey-v2
+  annotations:
+    argocd.argoproj.io/sync-wave: "4"
+spec:
+  replicas: 1
+  revisionHistoryLimit: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: monikey-v2-web
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: monikey-v2-web
+        app.kubernetes.io/part-of: monikey-v2
+        app.kubernetes.io/component: web
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101
+        runAsGroup: 101
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: web
+          # Replace with the immutable digest published from validated main.
+          image: ghcr.io/jeysibn/monikey-v2-web@sha256:31d4a80ddba6c8c3ba4d2d6e9887e72c561a07ebefdbc555c5f5bcece8d60b21
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          resources:
+            requests:
+              cpu: 25m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          startupProbe:
+            httpGet:
+              path: /
+              port: http
+            periodSeconds: 2
+            timeoutSeconds: 3
+            failureThreshold: 15
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 64Mi
