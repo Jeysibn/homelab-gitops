@@ -3,10 +3,11 @@
 ## Audit baseline
 
 The structural refactor was merged while the live root still read
-`kubernetes/argocd-apps`. The desired `root-app.yaml` now points to
-`kubernetes/applications`; an existing cluster must be updated explicitly
-because Argo CD does not manage the root Application from its own source.
-Legacy files remain in place for rollback.
+`kubernetes/argocd-apps`. The controlled cutover is now complete: both the
+`root-app.yaml` manifest and live root point to `kubernetes/applications`.
+Legacy files remain in place for rollback. The live update was applied
+explicitly because Argo CD does not manage the root Application from its own
+source.
 
 At audit time the live cluster had 13 Argo CD Applications: `root-app` and
 these 12 children:
@@ -227,6 +228,34 @@ Stop and request operator review if the root diff includes a deletion, any
 Application disappears, a child finalizer changes, a PersistentVolumeClaim or
 PersistentVolume changes identity or state, any workload becomes unavailable,
 or Argo CD reports a source-resolution or tracking-owner error.
+
+## Cutover execution record — 2026-10-25
+
+The structural refactor, finalizer-ownership note, and root-path change were
+merged through PRs #71, #72, and #73. Kubernetes CI passed after each merge.
+The live update paused root automated sync, changed only the root `source.path`,
+reviewed the server-side child Application diff, and restored the original
+automated prune/self-heal policy. The root then reconciled revision
+`83bcc7bf3f6b15a3fc4aa47e10d2eb2cc559f9c1` from `kubernetes/applications`.
+
+The diff contained all 12 existing child Applications, with no additions or
+deletions. It changed only the expected values-file and manifest paths. The
+Longhorn pre-delete hook finalizers remain controller-managed. All four PVCs
+remain Bound with their original PV identities; Deployments, StatefulSets, and
+DaemonSets were ready, and LoadBalancer addresses remained unchanged. No data
+loss occurred.
+
+At the latest verification, 10 child Applications were Synced/Healthy.
+`longhorn` and `prometheus` were Healthy but OutOfSync, matching the audited
+pre-cutover issues. Prometheus continued to fail its existing PVC shrink patch
+(`spec.resources.requests.storage` cannot be less than the bound volume's
+capacity). The root was Healthy but OutOfSync because its `longhorn`
+Application resource was OutOfSync. These conditions are recorded for follow-up;
+no storage or chart values were changed during cutover.
+
+The old registry, values, and manifest directories remain available for
+rollback. Do not remove them until the remaining health issues are understood
+and rollback no longer depends on those paths.
 
 ## Cleanup after cutover
 
