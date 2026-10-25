@@ -36,11 +36,17 @@ and record that diff as a cutover precondition.
 
 The live root has automated sync, prune, and self-heal enabled. Every child
 Application also has automated prune/self-heal and the
-`resources-finalizer.argocd.argoproj.io` finalizer. Live `longhorn` additionally
-has `pre-delete-finalizer.argocd.argoproj.io` and
-`pre-delete-finalizer.argocd.argoproj.io/cleanup`; these are retained in the
-explicit manifest even though the old registry does not declare them. Argo CD
-uses annotation tracking; live child tracking IDs identify the owner as
+`resources-finalizer.argocd.argoproj.io` finalizer. The initial audit also
+was `pre-delete-finalizer.argocd.argoproj.io` and
+`pre-delete-finalizer.argocd.argoproj.io/cleanup` on `longhorn`. These are
+controller-managed: Argo CD 3.5.1 adds or removes them based on whether the
+child's rendered resources contain pre-delete hooks, and runs their cleanup
+stage ([upstream controller](https://github.com/argoproj/argo-cd/blob/v3.5.1/controller/appcontroller.go#L1986-L2008)).
+They are not declared in the Application manifest. The explicit files retain
+the standard resource finalizer and leave these hook finalizers to Argo CD.
+Re-check their state immediately before cutover and do not manually remove or
+hard-code them. Argo CD uses annotation tracking; live child tracking IDs
+identify the owner as
 `root-app:argoproj.io/Application:argocd/<application-name>`. No custom
 Application health check is configured in `argocd-cm`.
 
@@ -141,9 +147,10 @@ merging it. Do not combine cleanup of the legacy directories with the cutover.
 The root desired set must contain the same 12 `Application` objects in the
 `argocd` namespace with the same names, project, destination namespaces,
 automated prune/self-heal settings, sync options, waves, and deletion
-  finalizers. Longhorn must retain its two live `pre-delete` finalizers. There
-  must be **no resource deletion or addition** in the root
-diff. The expected changes are limited to:
+finalizers. The explicit manifests declare the standard resource finalizer;
+Argo CD continues to manage hook finalizers dynamically. There must be **no
+Application resource deletion or addition** in the root diff. The expected
+spec changes are limited to:
 
 - Nine Helm Applications: Git values path changes from `kubernetes/helm/...`
   to its byte-identical path under `kubernetes/platform/...`.
@@ -151,7 +158,8 @@ diff. The expected changes are limited to:
   `kubernetes/manifests/...` to its byte-identical directory under
   `kubernetes/platform/...`.
 - No Helm chart, chart version, release name, namespace, or values content
-  change. Longhorn's two live pre-delete finalizers are explicitly retained.
+  change. Argo CD must retain or re-create the same hook finalizers from the
+  identical rendered resources.
 
 Updating a child Application's source path can trigger that child's own
 automated reconciliation. Since every moved values file and raw manifest is
