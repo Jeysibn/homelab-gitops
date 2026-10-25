@@ -2,7 +2,7 @@ server:
   persistentVolume:
     enabled: true
     storageClass: "longhorn"
-    size: 5Gi
+    size: 10Gi
   retention: 7d
   retentionSize: 3GB
   resources:
