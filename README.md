@@ -43,9 +43,10 @@ bootstrap.sh                        Fresh-cluster entry point
 
 The root Application manifest points to `kubernetes/applications/`. Updating
 the manifest does not change an already-installed root Application by itself;
-the live source path is updated separately during the controlled cutover. The
-old registry and configuration paths remain available for rollback until that
-cutover is verified. See
+the live source path was updated separately during the controlled cutover.
+The old registry and configuration paths remain available during the rollback
+window and will be removed only in a separate cleanup after the remaining
+health issues are reviewed. See
 [the migration and cutover runbook](docs/GitOps-Structure-Migration.md).
 
 ## How GitOps synchronization works
