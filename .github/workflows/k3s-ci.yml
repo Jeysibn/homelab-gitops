@@ -8,6 +8,7 @@ on:
       - 'bootstrap.sh'
       - 'kubernetes/**'
       - '.github/workflows/k3s-ci.yml'
+      - 'docs/GitOps-Structure-Migration.md'
   pull_request:
     branches: [main, dev]
 
@@ -40,6 +41,49 @@ jobs:
           helm template argocd-applications kubernetes/argocd-apps \
             --namespace argocd > rendered-manifests.yaml
 
+      - name: Validate explicit Application files and references
+        shell: bash
+        run: |
+          shopt -s nullglob
+          files=(kubernetes/applications/*.yaml)
+          [[ ${#files[@]} -eq 12 ]] || {
+            echo "Expected 12 explicit child Applications, found ${#files[@]}" >&2
+            exit 1
+          }
+
+          for file in "${files[@]}"; do
+            name="$(basename "$file" .yaml)"
+            grep -Fxq 'apiVersion: argoproj.io/v1alpha1' "$file"
+            grep -Fxq 'kind: Application' "$file"
+            grep -Fxq "  name: $name" "$file"
+            grep -Fxq '  namespace: argocd' "$file"
+            grep -Fxq '  project: default' "$file"
+            grep -Eq '^  (source|sources):$' "$file"
+            grep -Fxq '  destination:' "$file"
+            grep -Fxq '    server: https://kubernetes.default.svc' "$file"
+            grep -Eq '^    namespace: [a-z0-9-]+$' "$file"
+            grep -Fxq '  syncPolicy:' "$file"
+            grep -Fxq '    automated:' "$file"
+            grep -Fxq '      prune: true' "$file"
+            grep -Fxq '      selfHeal: true' "$file"
+            grep -Fq 'resources-finalizer.argocd.argoproj.io' "$file"
+            grep -Eq '^    argocd.argoproj.io/sync-wave: "[0-9]+"$' "$file"
+
+            while IFS= read -r value_file; do
+              [[ -f "$value_file" ]] || {
+                echo "$file: missing values file $value_file" >&2
+                exit 1
+              }
+            done < <(sed -n 's/^[[:space:]]*-[[:space:]]*\$values\///p' "$file")
+
+            while IFS= read -r manifest_dir; do
+              [[ -d "$manifest_dir" ]] || {
+                echo "$file: missing manifest directory $manifest_dir" >&2
+                exit 1
+              }
+            done < <(sed -n 's/^[[:space:]]*path:[[:space:]]*//p' "$file")
+          done
+
       - name: Install kubeconform
         run: |
           curl -sSL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz | tar xz
@@ -47,10 +91,15 @@ jobs:
 
       - name: Validate Kubernetes manifests
         run: |
+          mapfile -d '' platform_manifests < <(
+            find kubernetes/platform -type f -path '*/manifests/*.yaml' -print0 | sort -z
+          )
           kubeconform \
             -kubernetes-version 1.36.0 \
             -strict \
             -ignore-missing-schemas \
             kubernetes/bootstrap/*.yaml \
             kubernetes/manifests/ \
+            kubernetes/applications/ \
+            "${platform_manifests[@]}" \
             rendered-manifests.yaml

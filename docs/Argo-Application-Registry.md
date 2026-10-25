@@ -1,69 +1,45 @@
-# Argo Application Registry
+# Legacy Argo CD Application Registry
 
-The `kubernetes/argocd-apps` directory is a Helm chart that acts as the Argo CD application registry. Its values file is the source of truth for standard Helm releases; chart templates render the Argo `Application` objects consumed by the root application.
+`kubernetes/argocd-apps` is the Helm-based registry currently referenced by
+the live `root-app`. It generates nine Helm Applications from
+`values.yaml` and declares the three raw-manifest Applications in
+`templates/explicit-applications.yaml`.
 
-## Ownership boundary
+The registry remains in the repository during the structural transition. The
+prepared replacement is `kubernetes/applications/`, with service values and
+manifests copied under `kubernetes/platform/`. The live root source remains
+unchanged until the separately approved cutover. Keep the registry and old
+configuration paths until the new source has converged and rollback is no
+longer needed. See [GitOps Structure Migration](GitOps-Structure-Migration.md)
+for the audit, path mapping, validation, and cutover procedure.
 
-K3s and Calico are **bootstrap infrastructure** and are intentionally not present in this registry. Argo CD requires a working pod network and DNS in order to fetch Git repositories and reconcile applications, so it must never be made responsible for installing or reconciling the Calico CNI that it depends on.
+## Existing ownership boundary
 
-The bootstrap path owns:
+K3s and Calico are bootstrap infrastructure, not Applications. Argo CD
+depends on a working pod network and DNS to fetch Git repositories and
+reconcile services, so it must not own the Calico CNI it depends on.
 
-- K3s server configuration
-- Tigera operator
-- Calico `Installation/default`
-- Calico IPPool (`10.42.0.0/16`)
-- CoreDNS bootstrap override and networking smoke tests
+The bootstrap path owns K3s server configuration, the Tigera operator, Calico
+`Installation/default`, the Calico IPPool (`10.42.0.0/16`), CoreDNS bootstrap
+configuration, and network acceptance checks. Argo CD manages Longhorn,
+MetalLB, cert-manager, Traefik, DNS, and monitoring.
 
-The Argo registry starts above that layer and manages platform/application services such as Longhorn, MetalLB, cert-manager, Traefik, monitoring, and DNS workloads.
+## Legacy registry layout
 
-Do not add a `calico-operator` Application here. CI explicitly rejects that configuration.
-
-## Structure
-
-| Path | Responsibility |
+| Path | Legacy responsibility |
 | --- | --- |
-| `Chart.yaml` | Declares the registry chart |
-| `values.yaml` | Catalog of release names, repositories, chart versions, values files, namespaces, and sync waves |
-| `values.schema.json` | Validates the catalog contract during `helm lint` |
-| `templates/helm-applications.yaml` | Renders standard Helm-release Applications |
-| `templates/explicit-applications.yaml` | Keeps non-Helm Applications explicit |
-| `tests/expected-applications.yaml` | Semantic expected facts used by CI |
+| `Chart.yaml` | Registry chart metadata |
+| `values.yaml` | Helm Application names, repositories, chart versions, values paths, namespaces, and sync waves |
+| `values.schema.json` | Registry values validation |
+| `templates/helm-applications.yaml` | Generated Helm-chart Applications |
+| `templates/explicit-applications.yaml` | `metallb-config`, `cluster-issuer`, and `unbound-dns` |
+| `tests/expected-applications.yaml` | Historical expected Application facts |
 
-## Standard release entry
+While this registry remains the live source, the Kubernetes workflow still
+lint-renders it. The new files are also checked for YAML structure and source
+paths, and their manifests are included in Kubernetes validation. The live
+Application CRD schema was additionally checked with server-side dry-runs
+during this refactor.
 
-Each Helm release declares:
-
-- Stable Argo Application name
-- Chart repository and chart name
-- Explicit chart version
-- Optional repository-owned values file
-- Destination namespace
-- Argo sync wave
-
-The registry implementation supplies the repeated project, destination, automated sync, pruning, self-heal, namespace creation, and finalizer policy. Individual entries can override policy where existing behavior requires it.
-
-## Explicit Applications
-
-Non-Helm workloads remain readable templates under `templates/explicit-applications.yaml`. The current exceptions are:
-
-- `metallb-config`
-- `cluster-issuer`
-- `unbound-dns`
-
-This keeps the registry focused on the repeated Helm-release shape without hiding raw-manifest behavior behind conventions.
-
-## Validation
-
-CI performs the following checks:
-
-1. Verifies `install-k3s.sh` and `calico-installation.yaml` declare the same pod CIDR.
-2. Rejects a `calico-operator` entry in the Argo registry and legacy Calico `192.168.0.0/16` install paths.
-3. Checks bootstrap shell scripts with `bash -n`.
-4. `helm lint` validates the registry chart and catalog schema.
-5. `helm template` renders all child Applications.
-6. `yq` and `jq` extract stable Application facts from the render.
-7. `diff` compares those facts with `tests/expected-applications.yaml`.
-8. Kubeconform validates bootstrap/raw/rendered manifests against the Kubernetes minor used by K3s.
-9. Trivy scans Kubernetes configuration for high/critical misconfigurations.
-
-When adding a release, update `values.yaml` and the semantic fixture together. When changing a release, review the rendered facts for its name, source, version, namespace, sync wave, policy, and source count.
+Do not edit the live root path or remove these legacy files as part of routine
+application updates until the cutover is approved and complete.

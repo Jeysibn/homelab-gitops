@@ -275,20 +275,35 @@ The App-of-Apps children may remain `Progressing`, `OutOfSync`, or temporarily `
 
 ### 1. Directory Structure Separation
 
-To prevent linter collisions across tools, keep files partitioned by role:
+The target layout separates files by responsibility:
 
-- **`kubernetes/helm/`**: Contains key-value Helm override files. Checked via `yamllint` and `helm template`.
-- **`kubernetes/manifests/`**: Contains raw Kubernetes API objects. Checked via `kubeconform` with `-strict`.
-- **`kubernetes/argocd-apps/`**: Contains Argo CD application manifests. Checked via `kubeconform` and auto-parsed for Helm rendering checks.
+- **`kubernetes/applications/`**: One explicit Argo CD Application per service.
+- **`kubernetes/platform/`**: Helm values and raw Kubernetes manifests grouped by service.
+- **`kubernetes/bootstrap/`**: K3s, Calico, and Argo CD initialization.
+- **`kubernetes/argocd-apps/`, `kubernetes/helm/`, and `kubernetes/manifests/`**: Legacy paths retained until the approved root-app cutover is verified.
 
-### 2. Container Security Requirements
+During the transition, Kubernetes CI continues to render the legacy registry,
+checks the new Application YAML structure and referenced paths, and validates
+raw manifests. Kubeconform is configured to ignore missing CRD schemas; the
+Argo CD Application CRD was checked with server-side dry-runs during this
+refactor.
 
-All workloads in `kubernetes/manifests/` must pass Trivy security checks by defining explicit security contexts:
+### 2. Container Security Guidance
+
+When adding a raw workload manifest, define appropriate security contexts:
 
 - **Pod Level**: Set `runAsNonRoot: true`, non-zero `runAsUser`/`runAsGroup` IDs, and `seccompProfile.type: RuntimeDefault`.
 - **Container Level**: Set `allowPrivilegeEscalation: false`, `readOnlyRootFilesystem: true`, and drop `ALL` capabilities.
 - **Storage Handling**: Mount an `emptyDir` volume to temporary write directories such as `/tmp` when `readOnlyRootFilesystem: true` is active.
 
-### 3. Automated Helm Render Validation
+These are review guidelines; the current Kubernetes workflow does not run a
+Trivy configuration scan.
 
-The CI pipeline automatically parses Argo CD manifests under `kubernetes/argocd-apps/` using `yq` to extract chart names, repositories, and versions. Any newly added Argo CD application will be automatically rendered and validated without modifying `.github/workflows/k3s-ci.yml`.
+### 3. Helm and Application Validation
+
+The workflow runs `helm lint` and `helm template` against
+`kubernetes/argocd-apps/` while that registry remains the live source. New
+Application files are plain YAML and are checked for the required identity,
+project, source, destination, sync policy, finalizer, wave, and resolvable Git
+paths. Helm Applications still use their pinned upstream chart versions and
+repository-owned values files.
