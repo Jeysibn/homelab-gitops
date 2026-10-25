@@ -5,6 +5,7 @@ metadata:
   namespace: monikey
   annotations:
     cert-manager.io/cluster-issuer: homelab-selfsigned
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
 spec:
   ingressClassName: traefik
   tls:

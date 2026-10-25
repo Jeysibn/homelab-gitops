@@ -3,7 +3,8 @@
 MoniKey is an unauthenticated personal finance app. Keep it on the trusted LAN
 at `https://monikey.homelab.local`; do not add a public router or tunnel route.
 The certificate is issued by the homelab self-signed issuer, so browsers may
-show a trust warning until that issuer is trusted on the client.
+show a trust warning until that issuer is trusted on the client. The ingress
+uses HTTPS only; the app is not served over plain HTTP.
 
 ## First deployment
 
