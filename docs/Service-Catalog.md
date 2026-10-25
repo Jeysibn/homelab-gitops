@@ -18,6 +18,7 @@ This catalog documents how core homelab services are exposed inside the cluster 
 | Pi-hole Web UI | `dns` | Traefik Ingress | `pihole.homelab.local` | Web UI only; DNS traffic stays on `192.168.86.201` |
 | Longhorn UI | `longhorn-system` | Traefik Ingress | `longhorn.homelab.local` | Storage administration UI |
 | Prometheus | `monitoring` | Traefik Ingress | `prometheus.homelab.local` | Metrics backend; consider restricting later |
+| MoniKey | `monikey` | Traefik Ingress | `monikey.homelab.local` | Private unauthenticated finance app; PostgreSQL remains internal |
 
 ## Internal-only services
 

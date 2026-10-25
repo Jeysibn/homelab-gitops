@@ -1,0 +1,193 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: monikey-db-init
+  namespace: monikey
+# Mirrored from MoniKey's database/001_init.sql and database/seed.sql.
+# Keep these files in sync when changing the initial schema or seed.
+data:
+  001_init.sql: |
+    -- Initialize a new, empty MoniKey database only.
+    -- Do not rerun this file against a database that contains user data.
+
+    CREATE TABLE accounts (
+      id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      name VARCHAR(60) NOT NULL,
+      type VARCHAR(20) NOT NULL
+        CHECK (type IN ('cash', 'bank', 'ewallet', 'credit_card')),
+      opening_balance NUMERIC(12, 2) NOT NULL DEFAULT 0
+        CHECK (opening_balance >= 0),
+      opening_debt NUMERIC(12, 2) NOT NULL DEFAULT 0
+        CHECK (opening_debt >= 0),
+      credit_limit NUMERIC(12, 2),
+      CHECK (
+        (
+          type = 'credit_card'
+          AND credit_limit IS NOT NULL
+          AND credit_limit > 0
+          AND opening_balance = 0
+        )
+        OR
+        (
+          type <> 'credit_card'
+          AND credit_limit IS NULL
+          AND opening_debt = 0
+        )
+      )
+    );
+
+    CREATE UNIQUE INDEX idx_accounts_name_normalized
+      ON accounts (LOWER(BTRIM(name)));
+
+    CREATE TABLE categories (
+      id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      name VARCHAR(60) NOT NULL,
+      type VARCHAR(10) NOT NULL CHECK (type IN ('income', 'expense')),
+      UNIQUE (name, type)
+    );
+
+    CREATE TABLE transactions (
+      id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      account_id INTEGER NOT NULL REFERENCES accounts(id),
+      category_id INTEGER NOT NULL REFERENCES categories(id),
+      amount NUMERIC(12, 2) NOT NULL CHECK (amount > 0),
+      transaction_date DATE NOT NULL,
+      note TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE credit_card_payments (
+      id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      source_account_id INTEGER NOT NULL REFERENCES accounts(id),
+      card_account_id INTEGER NOT NULL REFERENCES accounts(id),
+      amount NUMERIC(12, 2) NOT NULL CHECK (amount > 0),
+      payment_date DATE NOT NULL,
+      note TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      CHECK (source_account_id <> card_account_id)
+    );
+
+    CREATE INDEX idx_transactions_account_date
+      ON transactions(account_id, transaction_date DESC);
+
+    CREATE INDEX idx_card_payments_card_date
+      ON credit_card_payments(card_account_id, payment_date DESC);
+
+  002_seed.sql: |
+    -- Repeatable category seed. The name/type unique key preserves user data
+    -- and allows "Other" to exist once for income and once for expense.
+
+    INSERT INTO categories (name, type)
+    VALUES
+      ('Salary', 'income'),
+      ('Freelance', 'income'),
+      ('Other', 'income'),
+      ('Food', 'expense'),
+      ('Transportation', 'expense'),
+      ('Groceries', 'expense'),
+      ('Bills', 'expense'),
+      ('Shopping', 'expense'),
+      ('Other', 'expense')
+    ON CONFLICT (name, type) DO NOTHING;
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: monikey
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: 5432
+      protocol: TCP
+
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: monikey
+spec:
+  serviceName: postgres
+  replicas: 1
+  persistentVolumeClaimRetentionPolicy:
+    whenDeleted: Retain
+    whenScaled: Retain
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: postgres
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: postgres
+    spec:
+      terminationGracePeriodSeconds: 60
+      containers:
+        - name: postgres
+          image: postgres:17.6-alpine
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: postgres
+              containerPort: 5432
+              protocol: TCP
+          env:
+            - name: POSTGRES_DB
+              value: monikey_dev
+            - name: POSTGRES_USER
+              value: monikey_app
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: monikey-db
+                  key: POSTGRES_PASSWORD
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          startupProbe:
+            exec:
+              command: ["pg_isready", "-U", "monikey_app", "-d", "monikey_dev"]
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 30
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "monikey_app", "-d", "monikey_dev"]
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "monikey_app", "-d", "monikey_dev"]
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          volumeMounts:
+            - name: postgres-data
+              mountPath: /var/lib/postgresql/data
+            - name: database-init
+              mountPath: /docker-entrypoint-initdb.d
+              readOnly: true
+      volumes:
+        - name: database-init
+          configMap:
+            name: monikey-db-init
+  volumeClaimTemplates:
+    - metadata:
+        name: postgres-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: longhorn
+        resources:
+          requests:
+            storage: 5Gi

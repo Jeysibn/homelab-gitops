@@ -46,8 +46,8 @@ jobs:
         run: |
           shopt -s nullglob
           files=(kubernetes/applications/*.yaml)
-          [[ ${#files[@]} -eq 12 ]] || {
-            echo "Expected 12 explicit child Applications, found ${#files[@]}" >&2
+          [[ ${#files[@]} -eq 13 ]] || {
+            echo "Expected 13 explicit child Applications, found ${#files[@]}" >&2
             exit 1
           }
 
