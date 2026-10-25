@@ -41,11 +41,11 @@ docs/                               Architecture, service catalog, incidents
 bootstrap.sh                        Fresh-cluster entry point
 ```
 
-The existing root Application still points to `kubernetes/argocd-apps` during
-the migration. The explicit files under `kubernetes/applications/` and copied
-configuration under `kubernetes/platform/` are prepared for a reviewed cutover.
-The old registry and source paths remain available for rollback until that
-cutover is approved and verified. See
+The root Application manifest points to `kubernetes/applications/`. Updating
+the manifest does not change an already-installed root Application by itself;
+the live source path is updated separately during the controlled cutover. The
+old registry and configuration paths remain available for rollback until that
+cutover is verified. See
 [the migration and cutover runbook](docs/GitOps-Structure-Migration.md).
 
 ## How GitOps synchronization works
