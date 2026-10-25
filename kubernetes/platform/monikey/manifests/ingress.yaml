@@ -19,7 +19,7 @@ spec:
             pathType: Prefix
             backend:
               service:
-                name: api
+                name: backend
                 port:
                   number: 8000
           - path: /
