@@ -1,0 +1,43 @@
+persistentVolumeClaim:
+  enabled: true
+  storageClass: "longhorn"
+  size: 5Gi
+
+adminPassword: "admin-change-me"
+
+resources:
+  requests:
+    cpu: 25m
+    memory: 64Mi
+  limits:
+    cpu: 100m
+    memory: 256Mi
+
+virtualHost: pihole.homelab.local
+
+serviceWeb:
+  type: ClusterIP
+
+serviceDns:
+  loadBalancerIP: 192.168.86.201
+  annotations:
+    metallb.universe.tf/allow-shared-ip: pihole-svc
+  type: LoadBalancer
+
+serviceDhcp:
+  enabled: false
+
+ingress:
+  enabled: true
+  ingressClassName: traefik
+  path: /
+  pathType: Prefix
+  hosts:
+    - pihole.homelab.local
+
+DNS1: "10.43.151.153#5335"
+DNS2: "10.43.151.153#5335"
+
+dnsmasq:
+  customDnsEntries:
+    - address=/homelab.local/192.168.86.200

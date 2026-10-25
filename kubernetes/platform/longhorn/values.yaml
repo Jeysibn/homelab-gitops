@@ -1,0 +1,53 @@
+global:
+  storageClass:
+    defaultClass: true
+
+persistence:
+  defaultClassReplicaCount: 1  # Configured for single-node K3s setup
+
+defaultSettings:
+  defaultDataPath: /var/lib/longhorn
+  replicaAutoBalance: disabled
+  storageMinimalAvailablePercentage: 15
+  storageOverProvisioningPercentage: 150
+  # This is a single-node cluster. Create the default disk automatically on
+  # the node instead of requiring the Kubernetes node label
+  # node.longhorn.io/create-default-disk=true.
+  createDefaultDiskLabeledNodes: false
+  defaultReplicaCount: 1
+
+longhornManager:
+  resources:
+    requests:
+      cpu: 25m
+      memory: 64Mi
+    limits:
+      cpu: 100m
+      memory: 128Mi
+
+longhornDriver:
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      cpu: 50m
+      memory: 64Mi
+
+longhornUI:
+  replicas: 1
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      cpu: 50m
+      memory: 64Mi
+
+preUpgradeChecker:
+  jobEnabled: false
+
+ingress:
+  enabled: true
+  ingressClassName: traefik
+  host: longhorn.homelab.local

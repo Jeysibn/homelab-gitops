@@ -1,0 +1,30 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: pihole-dns
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "4"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  sources:
+    - repoURL: https://mojo2600.github.io/pihole-kubernetes/
+      chart: pihole
+      targetRevision: 2.27.0
+      helm:
+        valueFiles:
+          - $values/kubernetes/platform/dns/pihole/values.yaml
+    - repoURL: https://github.com/jeysibn/homelab-gitops.git
+      targetRevision: main
+      ref: values
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: dns
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

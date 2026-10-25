@@ -1,0 +1,42 @@
+server:
+  persistentVolume:
+    enabled: true
+    storageClass: "longhorn"
+    size: 5Gi
+  retention: 7d
+  retentionSize: 3GB
+  resources:
+    requests:
+      cpu: 100m
+      memory: 512Mi
+    limits:
+      cpu: 500m
+      memory: 1Gi
+  ingress:
+    enabled: true
+    ingressClassName: traefik
+    hosts:
+      - prometheus.homelab.local
+
+alertmanager:
+  enabled: false
+
+nodeExporter:
+  enabled: true
+  resources:
+    requests:
+      cpu: 10m
+      memory: 24Mi
+    limits:
+      cpu: 50m
+      memory: 64Mi
+
+kube-state-metrics:
+  enabled: true
+  resources:
+    requests:
+      cpu: 25m
+      memory: 64Mi
+    limits:
+      cpu: 100m
+      memory: 128Mi
