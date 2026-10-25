@@ -30,12 +30,12 @@ The current single-node design means:
 ## Resource-right-sizing baseline
 
 The workloads are sized for this single 4-vCPU/8-GiB node. The active Helm
-values remain under `kubernetes/helm/` while the root Application uses the
-legacy registry; byte-identical copies are prepared under `kubernetes/platform/`
-for the approved cutover. Those values set explicit requests and limits; the
-low-traffic platform components use small reservations, while Prometheus, Loki,
-and Grafana retain larger memory ceilings for query and ingestion bursts.
-Prometheus is capped at 7 GB of TSDB data and Loki at 7 days of logs.
+values now live under `kubernetes/platform/`; the byte-identical copies under
+`kubernetes/helm/` are retained for rollback. The values set explicit requests
+and limits; low-traffic platform components use small reservations, while
+Prometheus, Loki, and Grafana retain larger memory ceilings for query and
+ingestion bursts. Prometheus is capped at 7 GB of TSDB data and Loki at 7 days
+of logs.
 
 Existing PVC sizes were intentionally not reduced: Kubernetes and Longhorn do
 not generally support shrinking an already-bound claim. Reclaiming space should

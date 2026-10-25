@@ -280,7 +280,7 @@ The target layout separates files by responsibility:
 - **`kubernetes/applications/`**: One explicit Argo CD Application per service.
 - **`kubernetes/platform/`**: Helm values and raw Kubernetes manifests grouped by service.
 - **`kubernetes/bootstrap/`**: K3s, Calico, and Argo CD initialization.
-- **`kubernetes/argocd-apps/`, `kubernetes/helm/`, and `kubernetes/manifests/`**: Legacy paths retained until the approved root-app cutover is verified.
+- **`kubernetes/argocd-apps/`, `kubernetes/helm/`, and `kubernetes/manifests/`**: Legacy paths retained during the rollback window; remove them only in a separate reviewed cleanup.
 
 During the transition, Kubernetes CI continues to render the legacy registry,
 checks the new Application YAML structure and referenced paths, and validates
@@ -301,8 +301,8 @@ Trivy configuration scan.
 
 ### 3. Helm and Application Validation
 
-The workflow runs `helm lint` and `helm template` against
-`kubernetes/argocd-apps/` while that registry remains the live source. New
+The workflow runs `helm lint` and `helm template` against the retained legacy
+registry. New
 Application files are plain YAML and are checked for the required identity,
 project, source, destination, sync policy, finalizer, wave, and resolvable Git
 paths. Helm Applications still use their pinned upstream chart versions and
