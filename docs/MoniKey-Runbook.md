@@ -10,7 +10,8 @@ show a trust warning until that issuer is trusted on the client.
 The `monikey` Argo CD Application creates the namespace and deploys the frontend,
 API, and one PostgreSQL StatefulSet. GHCR images are public and pinned to full
 commit SHA tags. The app and database Services are ClusterIP; only Traefik
-accepts connections from the LAN.
+accepts connections from the LAN. The API Service is named `backend` to match
+the hostname used by the Nginx configuration in the frontend image.
 
 Create the runtime Secret on the cluster before merging the Argo CD Application.
 Keep its password in a password manager or a private file outside Git. The
