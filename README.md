@@ -1,240 +1,161 @@
-# 🚀 Enterprise GitOps Homelab
+# Homelab GitOps
 
-![Kubernetes](https://img.shields.io/badge/Kubernetes-K3s-blue?logo=kubernetes)
-![ArgoCD](https://img.shields.io/badge/GitOps-ArgoCD-orange?logo=argo)
-![Terraform](https://img.shields.io/badge/IaC-Terraform-purple?logo=terraform)
-![Proxmox](https://img.shields.io/badge/Hypervisor-Proxmox-darkgreen?logo=proxmox)
+This repository provisions a Proxmox VM with Terraform, bootstraps a single-node
+K3s cluster, and uses Argo CD to deploy the services running on it.
 
-A GitOps-driven local Kubernetes homelab using **Terraform**, **K3s**, **Calico**, and **Argo CD**.
+## Architecture
 
-## 🏗️ Architecture
-
-![System Architecture Diagram](docs/Architecture.png)
-
-- **Infrastructure:** Proxmox VM provisioned with Terraform.
-- **Cluster:** K3s.
-- **CNI:** Calico, installed during bootstrap.
-- **Pod CIDR:** `10.42.0.0/16`.
-- **Service CIDR:** `10.43.0.0/16`.
-- **CoreDNS Service IP:** `10.43.0.10`.
-- **GitOps:** Argo CD App-of-Apps watching `main`.
-- **Ingress:** Traefik.
-- **Load balancing:** MetalLB.
-- **Storage:** Longhorn.
-- **Observability:** Prometheus, Loki, Grafana, and Alloy.
-- **LAN DNS:** Pi-hole and Unbound.
-
-See [docs/Service-Catalog.md](docs/Service-Catalog.md) for service URLs and [docs/Proxmox-Environment.md](docs/Proxmox-Environment.md) for the homelab inventory.
-
-For the complete September 7, 2026 fresh-bootstrap investigation and runbook, see [docs/Bootstrap-Incident-2026-09-07.md](docs/Bootstrap-Incident-2026-09-07.md).
-
-## ⚙️ GitOps Workflow
-
-1. Make changes on `dev`.
-2. GitHub Actions validates shell scripts, YAML, Helm rendering, and Kubernetes schemas.
-3. Merge `dev` into `main`.
-4. Argo CD reconciles the cluster from `main`.
-
-### Manually sync Argo CD from GitHub Actions
-
-The **Argo CD Sync** workflow runs only when you click **Run workflow**. It joins
-Tailscale using the existing Terraform CI credentials, refreshes the selected
-application, syncs its configured sources, and waits for `Synced` and `Healthy`.
-The CLI version matches the bootstrap installer (`v3.5.1`).
-
-Configure these under **Settings → Secrets and variables → Actions**:
-
-| Kind | Name | Value |
-| --- | --- | --- |
-| Secret | `TS_OAUTH_CLIENT_ID` | Existing Tailscale OAuth client ID |
-| Secret | `TS_OAUTH_SECRET` | Existing Tailscale OAuth secret authorized for `tag:ci` |
-| Secret | `ARGOCD_AUTH_TOKEN` | Argo CD API token with application `get` and `sync` permissions for the intended applications |
-| Secret | `ARGOCD_SERVER` | Tailnet-reachable Argo CD API address as `hostname:port`, without `https://` |
-
-The bootstrap installs Argo CD with its default ClusterIP service; joining
-Tailscale alone does not expose that service. First provide an HTTPS endpoint
-through a tailnet proxy, ingress, or an exposed service reachable through your
-Tailscale subnet router. Allow `tag:ci` to reach that endpoint in the tailnet
-policy. The workflow accepts advertised subnet routes; a `*.homelab.local` name
-also needs DNS resolution on the runner. Use a tailnet DNS name or routed IP
-if your LAN DNS is unavailable.
-
-Create a dedicated Argo CD API account/token rather than storing an admin
-password. Its RBAC policy needs `applications, get` and `applications, sync`
-for each target (for example, `default/<application>`). See the
-[Argo CD local account and RBAC setup](https://argo-cd.readthedocs.io/en/stable/operator-manual/user-management/).
-Store the token directly as `ARGOCD_AUTH_TOKEN`; the workflow uses token
-authentication without an interactive login.
-
-After merging this workflow into `main`, open **Actions → Argo CD Sync → Run
-workflow**, select **main**, enter the target application name, and
-run it. `root-app` updates the child Application definitions; it does not
-recursively force-sync or wait for every child's workloads. Run the workflow
-for the child application when you need to force its deployment. Existing
-automatic reconciliation remains enabled for the root and child applications.
-
-The workflow uses each application's configured target revision (`main` for
-this repository's manifests, pinned chart versions for Helm applications).
-It does not deploy the branch selected in the Actions UI; non-`main` runs are
-skipped. Enable **prune** to request deletion of obsolete resources, or
-**insecure** only when your private Argo CD endpoint uses a self-signed
-certificate. Both default to false. Existing automated prune policies still
-apply independently. Cluster sync runs are serialized and have bounded waits;
-a failed or timed-out run does not roll back or cancel a server-side sync.
-
-Calico is bootstrap-owned because Argo CD requires a working CNI before it can operate.
-
-## ⚠️ Required Calico Setting for the Single-Node K3s Topology
-
-This repository currently deploys K3s as a **single-node cluster**. For this topology, Calico **must keep overlay encapsulation disabled**:
-
-```yaml
-spec:
-  calicoNetwork:
-    containerIPForwarding: Enabled
-    ipPools:
-      - cidr: 10.42.0.0/16
-        encapsulation: None
-        natOutgoing: Enabled
+```mermaid
+flowchart TD
+  Git[GitHub repository] --> TF[Terraform]
+  TF --> VM[Proxmox K3s VM]
+  VM --> Boot[Bootstrap: K3s + Calico + Argo CD]
+  Boot --> Root[root-app: Argo CD App-of-Apps]
+  Root --> Apps[kubernetes/applications: child Applications]
+  Apps --> Platform[kubernetes/platform: Helm values and manifests]
+  Apps --> Charts[Upstream Helm charts]
+  Platform --> Services[Longhorn, MetalLB, DNS, ingress, monitoring]
+  Charts --> Services
 ```
 
-Do **not** change this single-node deployment back to `VXLANCrossSubnet` or another VXLAN mode without revalidating the network dataplane.
+Terraform provisions the VM and related Proxmox resources. Bootstrap installs
+K3s, Calico, and Argo CD; Calico stays outside Argo CD because the cluster
+network must work before GitOps can run. Argo CD owns the platform services.
+Helm continues to install third-party charts, with chart versions pinned in
+each Argo CD Application.
 
-During the September 2026 bootstrap investigation, Calico v3.32.1 with VXLAN enabled installed a live raw-table rule equivalent to:
+The single K3s node uses pod CIDR `10.42.0.0/16`, service CIDR
+`10.43.0.0/16`, and CoreDNS service IP `10.43.0.10`. Calico's current
+single-node configuration keeps encapsulation disabled. See
+[the bootstrap incident record](docs/Bootstrap-Incident-2026-09-07.md) before
+changing those networking settings.
+
+## Repository map
 
 ```text
--p udp -j NOTRACK
+terraform/                         Proxmox VM infrastructure
+kubernetes/bootstrap/              K3s, Calico, and Argo CD initialization
+kubernetes/applications/           One explicit Argo CD Application per service
+kubernetes/platform/               Helm values and raw service manifests
+docs/                               Architecture, service catalog, incidents
+bootstrap.sh                        Fresh-cluster entry point
 ```
 
-The rule matched all UDP traffic instead of only VXLAN UDP/4789. Because kube-proxy was running in iptables mode, UDP Kubernetes Service NAT depended on conntrack. The blanket `NOTRACK` rule caused UDP Service traffic such as CoreDNS `10.43.0.10:53` to bypass normal conntrack/NAT handling.
+The existing root Application still points to `kubernetes/argocd-apps` during
+the migration. The explicit files under `kubernetes/applications/` and copied
+configuration under `kubernetes/platform/` are prepared for a reviewed cutover.
+The old registry and source paths remain available for rollback until that
+cutover is approved and verified. See
+[the migration and cutover runbook](docs/GitOps-Structure-Migration.md).
 
-Observed behavior:
+## How GitOps synchronization works
 
-- Pod-to-pod routing worked.
-- TCP ClusterIP routing worked.
-- Direct DNS to the CoreDNS pod IP worked.
-- TCP to the CoreDNS ClusterIP worked.
-- UDP to the CoreDNS ClusterIP failed.
-- External UDP DNS from pods failed.
+`root-app` tracks `main` and reads the child Application definitions. Each
+child Application tracks either a pinned upstream Helm chart plus a Git values
+file, or a directory of repository-owned Kubernetes manifests. Automated sync,
+pruning, and self-healing are enabled on the existing root and child apps.
 
-Changing the Calico pool to `encapsulation: None`, reconciling the operator, and restarting `calico-node` removed the blanket UDP `NOTRACK` rule. The cluster network acceptance test then passed all pod routing, Service, internal DNS, and external DNS checks.
+Sync-wave annotations order child Application resources in the root sync. They
+do not by themselves prove that each child workload is healthy before the next
+wave starts. This Argo CD installation has no custom Application health check;
+use the live child health and sync status to confirm readiness. Do not infer
+workload health from the root sync alone.
 
-For a future **multi-node** deployment, do not automatically reuse this assumption. Re-evaluate whether encapsulation is required for the node/subnet topology and validate the generated Calico and kube-proxy rules before enabling VXLAN.
+## Making application changes
 
-See [docs/Troubleshooting.md](docs/Troubleshooting.md) for the troubleshooting summary and [docs/Bootstrap-Incident-2026-09-07.md](docs/Bootstrap-Incident-2026-09-07.md) for the complete incident record.
+### Add an application
 
-## 🚀 Fresh Bootstrap
+1. Add one file under `kubernetes/applications/` with a unique name in the
+   `argocd` namespace, project `default`, destination namespace, and sync policy.
+2. For a Helm chart, pin its chart version and use two sources: the upstream
+   chart and this Git repository with `ref: values`. Point `helm.valueFiles`
+   at `$values/kubernetes/platform/.../values.yaml`.
+3. Put service settings under `kubernetes/platform/`. Put plain manifests in a
+   service-specific `manifests/` directory and set the Application `path` to it.
+4. Preserve the repository's automated prune/self-heal policy and choose a
+   sync wave only when there is a real ordering reason. Review the Application
+   and its deletion finalizer carefully; deleting an Application can delete its
+   managed resources.
+5. Open a pull request and review the Kubernetes CI results before merging.
 
-The normal deployment flow starts by cloning this repository onto the new Ubuntu VM.
+During the current migration, new definitions are not deployed until the
+approved root cutover. Keep `root-app` on its current path until then.
+
+### Upgrade a Helm chart
+
+Change only `spec.sources[0].targetRevision` in that service's Application
+file. Review the chart's upgrade notes and rendered changes, then inspect the
+Argo CD diff and health after the approved deployment. Keep the values file
+unchanged unless the chart upgrade requires a separate configuration change.
+
+### Change application configuration
+
+Edit the corresponding values file under `kubernetes/platform/`, or the raw
+manifest under that service's `manifests/` directory. Keep persistent volume
+claims and storage requests unchanged unless a separately reviewed data
+migration is planned. Commit configuration and chart-version changes
+separately when possible so each diff is easy to understand.
+
+## Validation and troubleshooting
+
+The Kubernetes workflow checks shell syntax and YAML, renders the legacy
+registry while it remains the live source, and validates Kubernetes
+manifests. The Terraform workflow runs format, validation, lint, and plan.
+**It also automatically runs `terraform apply -auto-approve` on pushes to
+`main` that change `terraform/**`.** Review that infrastructure risk before
+merging Terraform changes; this refactor does not alter that behavior.
+
+The separate **Argo CD Sync** workflow is manual (`workflow_dispatch`). It
+refreshes and syncs one named Application, then waits for that Application to
+be Synced and Healthy. `root-app` refreshes child Application definitions; it
+does not wait for every child workload. The workflow requires the repository
+secrets `ARGOCD_SERVER`, `ARGOCD_AUTH_TOKEN`, `TS_OAUTH_CLIENT_ID`, and
+`TS_OAUTH_SECRET`, plus a tailnet route to the Argo CD endpoint. Use the
+workflow only after reviewing the target Application and its diff.
+
+To inspect GitOps state from a machine with cluster access:
 
 ```bash
-git clone https://github.com/Jeysibn/homelab-gitops.git
-cd homelab-gitops
-bash bootstrap.sh
-```
-
-**Do not run the bootstrap with `sudo`.** Run it as your normal Ubuntu user. The scripts call `sudo` only for the host operations that require root privileges and create kubeconfig for the user who launched the bootstrap.
-
-`bootstrap.sh` automatically determines the cloned repository directory from its own location, then runs:
-
-```text
-bootstrap.sh
-├── kubernetes/bootstrap/install-k3s.sh
-│   ├── configure host networking
-│   ├── install K3s
-│   ├── install Calico
-│   └── verify cluster networking
-└── kubernetes/bootstrap/install-argocd.sh
-    ├── install Argo CD
-    └── apply root-app.yaml
-```
-
-You do not need to `chmod +x` the scripts when using `bash bootstrap.sh`.
-
-### Run stages separately
-
-K3s and Calico only:
-
-```bash
-bash kubernetes/bootstrap/install-k3s.sh
-```
-
-Argo CD only:
-
-```bash
-bash kubernetes/bootstrap/install-argocd.sh
-```
-
-The scripts resolve their manifest and helper paths from the directory where the scripts themselves are stored, so they do not depend on your current working directory.
-
-### Normal-user kubeconfig requirement
-
-The Argo CD installer intentionally refuses root execution. If `sudo kubectl` works but `bash kubernetes/bootstrap/install-argocd.sh` reports that the Kubernetes API is unreachable, refresh the normal user's kubeconfig:
-
-```bash
-mkdir -p "$HOME/.kube"
-sudo install -m 600 -o "$(id -u)" -g "$(id -g)" \
-  /etc/rancher/k3s/k3s.yaml "$HOME/.kube/config"
-export KUBECONFIG="$HOME/.kube/config"
-```
-
-Then rerun the Argo CD stage without `sudo`.
-
-## ✅ Bootstrap Safety Checks
-
-The K3s bootstrap keeps only the checks required for a predictable fresh installation:
-
-- Calico CIDR must match the K3s pod CIDR.
-- UFW/firewalld must not silently block cluster networking.
-- K3s must use a real upstream resolver instead of a loopback DNS stub.
-- Calico must become ready.
-- The node and CoreDNS must become ready.
-- The cluster network acceptance test must pass before Argo CD is installed.
-
-The separate acceptance test verifies pod routing, Service ClusterIP routing, CoreDNS, Kubernetes service discovery, and external GitHub DNS:
-
-```bash
-sudo bash kubernetes/bootstrap/verify-cluster-network.sh
-```
-
-Recovery logic is intentionally kept outside the normal fresh bootstrap. For an old cluster with stale Calico IPAM state, inspect it separately with:
-
-```bash
-bash kubernetes/bootstrap/recover-calico-ipam.sh --plan
-```
-
-## 🔎 Verify the Cluster
-
-After bootstrap:
-
-```bash
-sudo kubectl get nodes
-sudo kubectl get pods -A -o wide
 sudo kubectl get applications -n argocd
-sudo kubectl get svc -A | grep LoadBalancer
+sudo kubectl describe application <name> -n argocd
+sudo kubectl get pods,deployments,statefulsets -A
 ```
 
-The desired root Argo CD state after convergence is:
+For an OutOfSync app, inspect its Argo CD diff and conditions first. Identify
+the specific resource that differs before syncing or changing configuration.
+An OutOfSync persistent volume claim may indicate a storage-size mismatch;
+Kubernetes does not allow shrinking a bound claim by editing its request.
+Never delete a claim or its namespace to clear an Argo CD diff. See
+[Troubleshooting](docs/Troubleshooting.md) and the
+[Longhorn incident record](docs/Longhorn-Multipath-Incident-2026-09-08.md).
 
-```text
-root-app   Synced   Healthy
+After an approved change, check that the root and affected child Applications
+are Synced and Healthy, workloads are ready, LoadBalancer services have their
+expected addresses, and persistent volume claims remain Bound:
+
+```bash
+sudo kubectl get applications -n argocd
+sudo kubectl get pods,svc -A
+sudo kubectl get pvc -A
 ```
 
-A temporary `root-app Unknown` immediately after Argo CD startup can occur if the application-controller reconciles before repo-server or Redis is fully reachable. Inspect the Application conditions and Argo CD component logs before treating this as another cluster-network failure. Once the components are healthy, a hard refresh can force a new comparison.
+For initial installation on a new VM, run `bash bootstrap.sh` as the normal
+Ubuntu user. Do not run the bootstrap as root. Existing-cluster bootstrap
+scripts are not part of the GitOps structure migration.
 
-Argo CD's root application points to `main`, so GitOps-managed services are reconciled from the production branch.
+## Secrets
 
-## 🌐 Local Routing
+This is a public repository. Do not commit passwords, tokens, private keys,
+or rendered Kubernetes Secrets. Store runtime credentials using an approved
+secret-management method outside plain Git values; keep examples clearly
+marked as placeholders. If a real credential was committed, rotate it and
+remove it from Git history as a separate security response.
 
-Traefik is the main HTTP/HTTPS entrypoint at `192.168.86.200`. Pi-hole provides LAN DNS at `192.168.86.201` and resolves `*.homelab.local` hostnames to Traefik.
+## Further reading
 
-| Service | Hostname |
-| --- | --- |
-| Grafana | `grafana.homelab.local` |
-| Pi-hole | `pihole.homelab.local` |
-| Longhorn | `longhorn.homelab.local` |
-| Prometheus | `prometheus.homelab.local` |
-
-## 🔐 Secrets
-
-Some application credentials are still placeholders. A future improvement is to manage them with SOPS, Sealed Secrets, or External Secrets Operator.
+- [Service catalog](docs/Service-Catalog.md)
+- [Proxmox environment](docs/Proxmox-Environment.md)
+- [Troubleshooting](docs/Troubleshooting.md)
+- [Bootstrap incident](docs/Bootstrap-Incident-2026-09-07.md)
+- [Longhorn multipath incident](docs/Longhorn-Multipath-Incident-2026-09-08.md)
+- [GitOps structure migration and cutover](docs/GitOps-Structure-Migration.md)
