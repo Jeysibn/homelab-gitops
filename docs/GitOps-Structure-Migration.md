@@ -2,9 +2,11 @@
 
 ## Audit baseline
 
-The structure refactor is being prepared on
-`refactor/simplify-gitops-structure`. The current root Application still reads
-`kubernetes/argocd-apps`; this branch does not change the live cluster.
+The structural refactor was merged while the live root still read
+`kubernetes/argocd-apps`. The desired `root-app.yaml` now points to
+`kubernetes/applications`; an existing cluster must be updated explicitly
+because Argo CD does not manage the root Application from its own source.
+Legacy files remain in place for rollback.
 
 At audit time the live cluster had 13 Argo CD Applications: `root-app` and
 these 12 children:
@@ -31,8 +33,13 @@ are pre-existing conditions; this migration does not change those chart values
 or attempt to repair those differences. The root's last compared Git revision
 matched the audited `main` commit (`adc0ca4`), and its 12 child Application
 resources were individually reported Synced even though the root was
-OutOfSync. The read-only status snapshot did not expose the root diff; inspect
-and record that diff as a cutover precondition.
+OutOfSync. A server-side `kubectl diff` against the legacy-rendered child
+Applications was empty. Comparing the new explicit files with the live child
+Applications showed only the expected 12 source-path changes plus Argo CD's
+controller-managed Longhorn pre-delete-hook finalizer state; there were no
+Application additions or deletions. The root's OutOfSync status reason is
+still unexplained, so inspect the refreshed Argo status before allowing the
+root sync.
 
 The live root has automated sync, prune, and self-heal enabled. Every child
 Application also has automated prune/self-heal and the
@@ -119,10 +126,10 @@ any root sync.
 3. Capture the current Application sync/health statuses, namespaces, workload
    readiness, Services, PV/PVC names, sizes, and reclaim policies. Keep the
    capture with the change record and do not include Secret data.
-4. Confirm independent backups or tested recovery copies for important
-   persistent data. A YAML backup of a PVC is not a data backup. Confirm the
-   Longhorn recovery path because the four current PVs use reclaim policy
-   `Delete`.
+4. The operator has accepted possible data loss for this cutover. No
+   independent data backups were verified during this task. The four current
+   PVs use reclaim policy `Delete`; retain the recorded PVC identities and
+   stop if the reviewed diff proposes their removal or replacement.
 5. Record or resolve the pre-existing OutOfSync state of `root-app`,
    `longhorn`, `metallb`, and `prometheus`. Prometheus has a PVC shrink
    validation error; do not make a storage change as part of this cutover.
@@ -132,15 +139,10 @@ any root sync.
 
 ### Changes to merge to `main`
 
-First merge the prepared structural files, CI checks, README, and this runbook
-while `kubernetes/bootstrap/root-app.yaml` still points to
-`kubernetes/argocd-apps`. The automated root continues to use the legacy
-registry. Keep all legacy registry, values, and manifest files in place.
-
-After those changes are reviewed, prepare a separate root-path change setting
-`spec.source.path` in `kubernetes/bootstrap/root-app.yaml` to
-`kubernetes/applications`. Review and approve that production change before
-merging it. Do not combine cleanup of the legacy directories with the cutover.
+The structural files and CI/documentation changes were merged while
+`root-app.yaml` still pointed at the legacy registry. This cutover change sets
+`spec.source.path` to `kubernetes/applications`. Keep all legacy registry,
+values, and manifest files in place; do not combine cleanup with the cutover.
 
 ### Expected Application diff
 
