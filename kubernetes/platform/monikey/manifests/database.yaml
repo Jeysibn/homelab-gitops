@@ -67,11 +67,28 @@ data:
       CHECK (source_account_id <> card_account_id)
     );
 
+    CREATE TABLE account_transfers (
+      id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      source_account_id INTEGER NOT NULL REFERENCES accounts(id),
+      destination_account_id INTEGER NOT NULL REFERENCES accounts(id),
+      amount NUMERIC(12, 2) NOT NULL CHECK (amount > 0),
+      transfer_date DATE NOT NULL,
+      note TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      CHECK (source_account_id <> destination_account_id)
+    );
+
     CREATE INDEX idx_transactions_account_date
       ON transactions(account_id, transaction_date DESC);
 
     CREATE INDEX idx_card_payments_card_date
       ON credit_card_payments(card_account_id, payment_date DESC);
+
+    CREATE INDEX idx_account_transfers_source_date
+      ON account_transfers(source_account_id, transfer_date DESC);
+
+    CREATE INDEX idx_account_transfers_destination_date
+      ON account_transfers(destination_account_id, transfer_date DESC);
 
   002_seed.sql: |
     -- Repeatable category seed. The name/type unique key preserves user data

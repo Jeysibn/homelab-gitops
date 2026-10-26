@@ -42,6 +42,24 @@ repository. PostgreSQL runs them only when the Longhorn-backed volume is empty.
 Keep both copies in sync when changing the initial schema or seed. Never delete
 the PVC to rerun initialization or to repair an Argo CD diff.
 
+## Schema migrations
+
+For migration `002_account_transfers.sql`, first take and verify a logical
+backup using the procedure below. Then merge the reviewed GitOps change. Argo CD
+runs the migration Job as a PreSync hook before applying the application
+Deployments. The SQL is mirrored from MoniKey's canonical migration and is safe
+to retry; a failed Job stops the sync so the new API image is not rolled out.
+The hook is also invoked on later syncs, where the idempotent migration is a
+no-op after its table and indexes exist.
+
+This removes the manual `kubectl` step for applying the migration. The backup
+and restore-check procedure remains manual because no protected off-cluster
+backup destination is configured for automation.
+
+Do not delete the PostgreSQL PVC to apply schema changes. A fresh empty database
+gets the current schema from `monikey-db-init`; existing databases get numbered
+forward migrations through the Argo CD hook.
+
 ## Verify the deployment
 
 ```bash
