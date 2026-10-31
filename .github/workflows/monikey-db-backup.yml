@@ -61,7 +61,8 @@ jobs:
         run: |
           set -euo pipefail
           kubectl auth can-i get pods --namespace monikey --quiet
-          kubectl auth can-i get pods/exec postgres-0 --namespace monikey --quiet
+          kubectl auth can-i get pods/postgres-0 --subresource=exec \
+            --namespace monikey --quiet
           kubectl get pod postgres-0 --namespace monikey --output=name > /dev/null
 
       - name: Create logical backup
