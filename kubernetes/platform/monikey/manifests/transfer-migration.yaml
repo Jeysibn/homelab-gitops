@@ -5,7 +5,7 @@ metadata:
   namespace: monikey
   annotations:
     argocd.argoproj.io/hook: PreSync
-    argocd.argoproj.io/sync-wave: "-2"
+    argocd.argoproj.io/sync-wave: "-4"
     argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
 data:
   002_account_transfers.sql: |
@@ -40,7 +40,7 @@ metadata:
   namespace: monikey
   annotations:
     argocd.argoproj.io/hook: PreSync
-    argocd.argoproj.io/sync-wave: "-1"
+    argocd.argoproj.io/sync-wave: "-3"
     argocd.argoproj.io/hook-delete-policy: BeforeHookCreation,HookSucceeded
 spec:
   activeDeadlineSeconds: 600

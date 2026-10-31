@@ -44,17 +44,20 @@ the PVC to rerun initialization or to repair an Argo CD diff.
 
 ## Schema migrations
 
-For migration `002_account_transfers.sql`, first take and verify a logical
-backup using the procedure below. Then merge the reviewed GitOps change. Argo CD
-runs the migration Job as a PreSync hook before applying the application
-Deployments. The SQL is mirrored from MoniKey's canonical migration and is safe
-to retry; a failed Job stops the sync so the new API image is not rolled out.
-The hook is also invoked on later syncs, where the idempotent migration is a
-no-op after its table and indexes exist.
+For each numbered migration, first take and verify a logical backup using the
+procedure below. Then merge the reviewed GitOps change. Argo CD runs migration
+Jobs as PreSync hooks before applying the application Deployments. The SQL is
+mirrored from MoniKey's canonical migration; a failed Job stops the sync so the
+new API image is not rolled out. Migrations 002 and 003 run in order on every
+sync: 002 creates the transfer table, then 003 removes the old nonnegative
+baseline constraints needed for current-amount corrections. Both migrations
+are idempotent and safely do nothing when their changes are already present.
 
-This removes the manual `kubectl` step for applying the migration. The backup
-and restore-check procedure remains manual because no protected off-cluster
-backup destination is configured for automation.
+This removes the manual `kubectl` step for applying migrations. The backup and
+restore-check procedure remains manual because no protected off-cluster backup
+destination is configured for automation. For migration 003, create and verify
+the backup before merging the GitOps change; the merge triggers the PreSync Job
+through the existing automated Argo CD sync policy.
 
 Do not delete the PostgreSQL PVC to apply schema changes. A fresh empty database
 gets the current schema from `monikey-db-init`; existing databases get numbered
