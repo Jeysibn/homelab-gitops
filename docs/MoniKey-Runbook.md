@@ -83,6 +83,32 @@ kubectl exec -n monikey postgres-0 -- \
   pg_dump -U monikey_app -d monikey_dev -Fc > monikey-$(date +%F).dump
 ```
 
+For a manual GitHub Actions backup, open **Actions → MoniKey database backup →
+Run workflow** on `main` and confirm the live backup input. The workflow restores
+the dump into a disposable PostgreSQL container before encrypting it and
+uploading a seven-day artifact. Download the encrypted `.gpg` artifact and move
+it to owner-controlled encrypted storage; the artifact is temporary transport,
+not long-term backup retention. Decrypt it with the passphrase stored outside
+GitHub and Git.
+
+The workflow requires these GitHub Actions repository secrets:
+
+- `TS_OAUTH_CLIENT_ID` and `TS_OAUTH_SECRET` for the existing Tailscale CI
+  connection.
+- `MONIKEY_BACKUP_KUBECONFIG_B64`: base64-encoded kubeconfig using a
+  namespace-scoped service account. It needs `get` on pods and `create` on
+  `pods/exec` in `monikey`; the `monikey-backup` ServiceAccount and Role are in
+  `kubernetes/platform/monikey/manifests/backup-access.yaml`. Its API endpoint
+  must be reachable through the accepted Tailscale routes. Keep the token
+  limited to this namespace and rotate it when it expires.
+- `MONIKEY_BACKUP_PASSPHRASE`: a high-entropy passphrase used to encrypt the
+  artifact with GPG AES-256. Save it in the owner's password manager; it is
+  required to recover the artifact.
+
+Do not print or commit any secret. Before merging a database migration, run the
+backup workflow and confirm both the restore check and encrypted artifact
+completed successfully.
+
 Restore into a new, empty database for a check or a planned recovery. Keep the
 current database untouched until the restored copy has been verified:
 
