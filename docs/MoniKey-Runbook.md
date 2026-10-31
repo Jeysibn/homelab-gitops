@@ -96,11 +96,13 @@ The workflow requires these GitHub Actions repository secrets:
 - `TS_OAUTH_CLIENT_ID` and `TS_OAUTH_SECRET` for the existing Tailscale CI
   connection.
 - `MONIKEY_BACKUP_KUBECONFIG_B64`: base64-encoded kubeconfig using a
-  namespace-scoped service account. It needs `get` on pods and `create` on
-  `pods/exec` in `monikey`; the `monikey-backup` ServiceAccount and Role are in
-  `kubernetes/platform/monikey/manifests/backup-access.yaml`. Its API endpoint
-  must be reachable through the accepted Tailscale routes. Keep the token
-  limited to this namespace and rotate it when it expires.
+  namespace-scoped service account. It needs `get` on pods and `get`/`create`
+  on `pods/exec` for `postgres-0` in `monikey`; the `monikey-backup`
+  ServiceAccount and Role are in
+  `kubernetes/platform/monikey/manifests/backup-access.yaml`. The `get` verb
+  supports kubectl's WebSocket exec transport; `create` supports POST-based
+  clients. Its API endpoint must be reachable through the accepted Tailscale
+  routes. Keep the token limited to this namespace and rotate it when it expires.
 - `MONIKEY_BACKUP_PASSPHRASE`: a high-entropy passphrase used to encrypt the
   artifact with GPG AES-256. Save it in the owner's password manager; it is
   required to recover the artifact.
