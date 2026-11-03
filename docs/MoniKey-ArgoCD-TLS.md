@@ -18,6 +18,14 @@ Do not treat a certificate as trusted merely because the endpoint presents it. O
 
 The GitHub workflow only reports observations. It does not select, trust, or save the presented certificate. If there is no independent expected fingerprint or CA source, stop and arrange an owner-verified source before changing trust.
 
+## Read-only Kubernetes source comparison
+
+The manual workflow `.github/workflows/monikey-argocd-certificate-kubernetes-verification.yml` uses the existing CA-verified schema-inspection kubeconfig and Tailscale connection. It is gated by the protected `monikey-production-inspection` Environment, the owner/main-only policy check, and an explicit confirmation input. It verifies the current context, exact API server, CA data, and that insecure TLS is disabled before checking any resource permissions.
+
+The workflow checks read permission for the fixed `argocd-server` Deployment and namespace-scoped Ingress metadata before inspecting those objects. If no matching Ingress TLS source exists, it also checks and reads only the `server.insecure` field from `argocd-cmd-params-cm` before considering the conventional `argocd-server-tls` Secret. It checks `kubectl auth can-i get secrets/<name>` for each candidate before any Secret request. If allowed, it reads only `.data.tls.crt` with a fixed JSONPath; it never retrieves the Secret object or private key. Multiple or unclear candidate sources fail closed. The script compares the certificate's SHA-256 fingerprint with the observed endpoint fingerprint and reports only MATCH, MISMATCH, or BLOCKED plus redacted source/validity metadata.
+
+The GitOps-managed inspection Role grants only `get pods/postgres-0` and `create pods/portforward` in namespace `monikey`; it grants no Argo CD namespace access. Other live bindings could exist, so effective permissions are checked at runtime. If the existing identity cannot read the required metadata, this workflow reports BLOCKED without reading a Secret. No additional access is granted by this PR. Do not widen this Role to make the check pass; any separate read-only permission proposal requires its own review and approval. The repository has no Argo CD Ingress or TLS Secret manifest, and installs Argo CD from its upstream manifest, so the live certificate source remains UNKNOWN until authorized runtime metadata can establish it.
+
 ## Optional Argo CD CLI trust certificate
 
 If the expected private CA (or independently verified self-signed server certificate) is confirmed, configure the protected Environment secret `ARGOCD_SERVER_TRUST_CERT_B64` in `monikey-inspection-provisioning` with the base64-encoded PEM certificate bundle. For example, from a trusted workstation with the already verified PEM file:
@@ -35,10 +43,11 @@ This format/validity check does not verify the bundle's authenticity. The owner 
 
 ## Approval sequence
 
-1. Review and merge the documentation, diagnostic, and bootstrap trust-support PR.
-2. Dispatch the certificate diagnostic from `main` with confirmation and approve the protected Environment.
-3. Compare the reported fingerprint, hostname result, validity, chain, and trust result with an independently obtained expected certificate/CA. Do not proceed if the expected identity cannot be verified.
-4. Only after that comparison, configure `ARGOCD_SERVER_TRUST_CERT_B64` as an Environment secret. Do not commit or log the PEM value.
-5. After configuring the verified trust bundle, dispatch the read-only Application audit with confirmation and approve its protected Environment. The same trust configuration is then used for the later bootstrap workflow; review and approve a separate bootstrap dispatch because it creates a role/token. Successful TLS inspection or a read-only audit does not authorize those writes.
+1. Review and merge the workflow and documentation PR.
+2. Dispatch the read-only TLS metadata diagnostic from `main` with confirmation and approve the protected Environment.
+3. Independently verify the expected fingerprint or CA through a trusted source separate from the endpoint. Then dispatch the Kubernetes API source comparison with confirmation and approve `monikey-production-inspection`. If it reports BLOCKED, do not infer the certificate source or add permissions under this workflow.
+4. Only after the comparison and independent verification agree, configure `ARGOCD_SERVER_TRUST_CERT_B64` in the protected provisioning Environment. Do not commit or log the PEM value.
+5. Dispatch and approve the one-time Argo CD token bootstrap. It is a separate write operation and uses the verified trust bundle.
+6. After bootstrap completes, dispatch and approve the read-only Argo CD Application audit. It uses the same verified trust bundle. Passing certificate checks does not itself authorize token creation, Application sync, or deployment.
 
 No certificate diagnostic, secret configuration, Argo CD operation, sync, or deployment is performed by this repository change.

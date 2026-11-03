@@ -1,0 +1,137 @@
+name: Verify Argo CD certificate from Kubernetes API
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_certificate_verification:
+        description: Confirm a read-only, permission-checked certificate comparison
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: monikey-argocd-certificate-kubernetes-verification
+  cancel-in-progress: false
+
+jobs:
+  environment-preflight:
+    name: Verify protected inspection Environment
+    if: github.ref == 'refs/heads/main' && inputs.confirm_certificate_verification
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    outputs:
+      protected: ${{ steps.environment.outputs.protected }}
+    steps:
+      - name: Checkout reviewed Environment validator
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Verify owner approval and main-only Environment policy
+        id: environment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          REPOSITORY_OWNER: ${{ github.repository_owner }}
+          ENVIRONMENT_NAME: monikey-production-inspection
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          response="$RUNNER_TEMP/certificate-environment.json"
+          policies="$RUNNER_TEMP/certificate-environment-branches.json"
+          trap 'rm -f "$response" "$policies"' EXIT
+          status="$(curl --silent --show-error --connect-timeout 5 --max-time 15 \
+            --output "$response" --write-out '%{http_code}' \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            --header 'Accept: application/vnd.github+json' \
+            --header 'X-GitHub-Api-Version: 2022-11-28' \
+            "$GITHUB_API_URL/repos/$REPOSITORY/environments/$ENVIRONMENT_NAME")"
+          [[ "$status" == 200 ]] || {
+            echo '::error::Protected production inspection Environment is missing or unreadable.'
+            exit 1
+          }
+          policy_status="$(curl --silent --show-error --connect-timeout 5 --max-time 15 \
+            --output "$policies" --write-out '%{http_code}' \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            --header 'Accept: application/vnd.github+json' \
+            --header 'X-GitHub-Api-Version: 2022-11-28' \
+            "$GITHUB_API_URL/repos/$REPOSITORY/environments/$ENVIRONMENT_NAME/deployment-branch-policies")"
+          [[ "$policy_status" == 200 ]] || {
+            echo '::error::Production inspection Environment branch policy is missing or unreadable.'
+            exit 1
+          }
+          python3 scripts/monikey-schema-inspect/validate_environment.py \
+            "$response" "$policies" "$REPOSITORY_OWNER"
+          echo 'protected=true' >> "$GITHUB_OUTPUT"
+
+  verify:
+    name: Compare only an authorized Kubernetes certificate source
+    needs: environment-preflight
+    if: needs.environment-preflight.outputs.protected == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    environment:
+      name: monikey-production-inspection
+    env:
+      EXPECTED_CONTEXT: ${{ vars.MONIKEY_SCHEMA_EXPECTED_CONTEXT }}
+      EXPECTED_API_SERVER: ${{ vars.MONIKEY_SCHEMA_EXPECTED_API_SERVER }}
+    steps:
+      - name: Checkout reviewed certificate verifier
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Require fixed CA-verified Kubernetes identity
+        env:
+          KUBECONFIG_B64: ${{ secrets.MONIKEY_SCHEMA_INSPECTION_KUBECONFIG_B64 }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          : "${KUBECONFIG_B64:?Configure the existing CA-verified inspection kubeconfig}"
+          : "${EXPECTED_CONTEXT:?Configure the approved context variable}"
+          : "${EXPECTED_API_SERVER:?Configure the approved API server variable}"
+
+      - name: Connect to Tailscale
+        uses: tailscale/github-action@v2
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
+          args: --accept-routes
+
+      - name: Configure existing restricted kubeconfig
+        env:
+          KUBECONFIG_B64: ${{ secrets.MONIKEY_SCHEMA_INSPECTION_KUBECONFIG_B64 }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          install -d -m 700 "$RUNNER_TEMP/argocd-certificate-kube"
+          printf '%s' "$KUBECONFIG_B64" | base64 --decode \
+            > "$RUNNER_TEMP/argocd-certificate-kube/config"
+          chmod 600 "$RUNNER_TEMP/argocd-certificate-kube/config"
+          echo "KUBECONFIG=$RUNNER_TEMP/argocd-certificate-kube/config" >> "$GITHUB_ENV"
+
+      - name: Install pinned kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: v1.36.0
+
+      - name: Check authorization, identify source and compare certificate
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/monikey-schema-inspect/compare_argocd_certificate_source.py
+
+      - name: Remove temporary kubeconfig
+        if: always()
+        shell: bash
+        run: |
+          config="$RUNNER_TEMP/argocd-certificate-kube/config"
+          [[ ! -f "$config" ]] || rm -f "$config"
+          directory="$RUNNER_TEMP/argocd-certificate-kube"
+          [[ ! -d "$directory" ]] || rmdir "$directory" 2>/dev/null || true
