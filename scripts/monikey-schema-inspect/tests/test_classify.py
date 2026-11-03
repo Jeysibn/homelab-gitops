@@ -10,6 +10,11 @@ ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location("classify", ROOT / "classify.py")
 classify_module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(classify_module)
+environment_spec = importlib.util.spec_from_file_location(
+    "validate_environment", ROOT / "validate_environment.py"
+)
+environment_module = importlib.util.module_from_spec(environment_spec)
+environment_spec.loader.exec_module(environment_module)
 
 
 def table(columns=None, constraints=None, indexes=None, comments=None):
@@ -101,6 +106,51 @@ def complete_inventory():
 
 
 class ClassificationTests(unittest.TestCase):
+    def valid_environment(self):
+        return ({
+            "name": "monikey-production-inspection",
+            "protection_rules": [{
+                "type": "required_reviewers",
+                "prevent_self_review": False,
+                "reviewers": [{"type": "User", "reviewer": {"login": "Jeysibn"}}],
+            }],
+            "deployment_branch_policy": {"custom_branch_policies": True, "protected_branches": False},
+        }, {"branch_policies": [{"name": "main"}]})
+
+    def test_single_operator_owner_can_approve_read_only_inspection(self):
+        environment, branches = self.valid_environment()
+        self.assertEqual(environment_module.validate(environment, branches, "Jeysibn"), [])
+
+    def test_rejects_environment_that_blocks_owner_self_approval(self):
+        environment, branches = self.valid_environment()
+        environment["protection_rules"][0]["prevent_self_review"] = True
+        self.assertIn("repository owner must be a required reviewer with self-approval enabled",
+                      environment_module.validate(environment, branches, "Jeysibn"))
+
+    def test_rejects_missing_or_wrong_owner_reviewer(self):
+        environment, branches = self.valid_environment()
+        environment["protection_rules"][0]["reviewers"] = [
+            {"type": "User", "reviewer": {"login": "another-user"}}
+        ]
+        self.assertTrue(environment_module.validate(environment, branches, "Jeysibn"))
+
+    def test_rejects_wrong_environment_name(self):
+        environment, branches = self.valid_environment()
+        environment["name"] = "other-environment"
+        self.assertIn("expected protected Environment is missing",
+                      environment_module.validate(environment, branches, "Jeysibn"))
+
+    def test_rejects_any_environment_branch_other_than_main(self):
+        environment, branches = self.valid_environment()
+        branches["branch_policies"] = [{"name": "main"}, {"name": "release/*"}]
+        self.assertIn("Environment must allow exactly the main branch",
+                      environment_module.validate(environment, branches, "Jeysibn"))
+
+    def test_self_approval_is_not_migration_or_deployment_approval(self):
+        document = (ROOT.parents[1] / "docs/MoniKey-Schema-Inspection.md").read_text().lower()
+        self.assertIn("not independent review", document)
+        self.assertIn("separate explicit approval", document)
+
     def test_all_reviewed_signatures_are_applied(self):
         inventory = complete_inventory()
         original = classify_module.EXPECTED_SIGNATURES.copy()
@@ -266,17 +316,24 @@ class ClassificationTests(unittest.TestCase):
     def test_workflow_is_manual_fixed_target_and_separate_from_backup(self):
         workflow = (ROOT.parents[1] / ".github/workflows/monikey-schema-inspection.yml").read_text()
         self.assertIn("workflow_dispatch:", workflow)
+        self.assertIn("default: false", workflow)
+        self.assertIn("required: true", workflow)
         self.assertNotRegex(workflow, r"(?m)^\s*(push|pull_request|schedule|workflow_run):")
         self.assertIn("github.ref == 'refs/heads/main' && inputs.confirm_schema_inspection", workflow)
         self.assertIn("name: monikey-production-inspection", workflow)
         self.assertIn("deployment-branch-policies", workflow)
-        self.assertIn('branch_names != ["main"]', workflow)
+        self.assertIn("validate_environment.py", workflow)
         self.assertIn("contents: read", workflow)
         self.assertIn("actions: read", workflow)
         for unsafe in ("pods/exec", "MONIKEY_BACKUP_KUBECONFIG_B64", "monikey_app", "argocd app sync"):
             self.assertNotIn(unsafe, workflow)
         self.assertIn("monikey_schema_inspector", workflow)
         self.assertIn("-d monikey_dev", workflow)
+
+    def test_pr_validation_runs_offline_safety_suite(self):
+        ci = (ROOT.parents[1] / ".github/workflows/k3s-ci.yml").read_text()
+        self.assertIn("python3 -m unittest discover -s scripts/monikey-schema-inspect/tests", ci)
+        self.assertNotIn("test-postgres.sh", ci)
 
     def test_pgpass_writer_escapes_password_delimiters(self):
         writer = ROOT / "write_pgpass.py"

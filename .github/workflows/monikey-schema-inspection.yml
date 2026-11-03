@@ -26,7 +26,7 @@ jobs:
     outputs:
       protected: ${{ steps.environment.outputs.protected }}
     steps:
-      - name: Require an existing environment with a required reviewer
+      - name: Verify owner approval and main-only Environment policy
         id: environment
         env:
           GH_TOKEN: ${{ github.token }}
@@ -58,32 +58,8 @@ jobs:
             echo '::error::Environment main-only branch policy is missing or not readable.'
             exit 1
           }
-          python3 - "$response" "$policies" <<'PY'
-          import json, sys
-          data = json.load(open(sys.argv[1], encoding="utf-8"))
-          branches = json.load(open(sys.argv[2], encoding="utf-8"))
-          owner = __import__("os").environ["REPOSITORY_OWNER"].casefold()
-          rules = [rule for rule in data.get("protection_rules", [])
-                   if rule.get("type") == "required_reviewers"]
-          owner_required = any(
-              rule.get("prevent_self_review") is True
-              and any(reviewer.get("type") == "User"
-                      and (reviewer.get("reviewer") or {}).get("login", "").casefold() == owner
-                      for reviewer in rule.get("reviewers", []))
-              for rule in rules
-          )
-          if not owner_required:
-              print("::error::Environment must require repository-owner review and prevent self-review.")
-              raise SystemExit(1)
-          policy = data.get("deployment_branch_policy") or {}
-          branch_names = [item.get("name") for item in branches.get("branch_policies", [])]
-          if (policy.get("custom_branch_policies") is not True
-                  or policy.get("protected_branches") is not False
-                  or branch_names != ["main"]):
-              print("::error::Environment must allow exactly the main branch.")
-              raise SystemExit(1)
-          print("Owner review, self-review protection, and main-only environment policy verified.")
-          PY
+          python3 scripts/monikey-schema-inspect/validate_environment.py \
+            "$response" "$policies" "$REPOSITORY_OWNER"
           echo 'protected=true' >> "$GITHUB_OUTPUT"
           rm -f "$response" "$policies"
 
