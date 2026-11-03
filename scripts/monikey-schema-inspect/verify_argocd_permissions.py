@@ -4,7 +4,10 @@
 from __future__ import annotations
 
 import json
+import argparse
+import os
 import subprocess
+from pathlib import Path
 
 
 EXPECTED_USERNAME = "proj:default:monikey-inspection-reader"
@@ -66,9 +69,15 @@ def run_checked(command: list[str], run=subprocess.run) -> str:
     return result.stdout.strip()
 
 
-def verify(executable: str = "argocd", run=subprocess.run) -> None:
+def verify(executable: str = "argocd", run=subprocess.run, server_crt: str | None = None) -> None:
+    command_prefix = [executable]
+    if server_crt:
+        certificate = Path(server_crt)
+        if not certificate.is_file() or not os.access(certificate, os.R_OK):
+            raise ValueError("trust certificate file is missing or unreadable")
+        command_prefix.extend(["--server-crt", server_crt])
     identity_output = run_checked(
-        [executable, "account", "get-user-info", "--grpc-web", "--output", "json"], run
+        [*command_prefix, "account", "get-user-info", "--grpc-web", "--output", "json"], run
     )
     try:
         identity = json.loads(identity_output)
@@ -79,15 +88,18 @@ def verify(executable: str = "argocd", run=subprocess.run) -> None:
 
     for action, resource, object_name, expected in PERMISSION_CHECKS:
         actual = run_checked(
-            [executable, "account", "can-i", action, resource, object_name, "--grpc-web"], run
+            [*command_prefix, "account", "can-i", action, resource, object_name, "--grpc-web"], run
         )
         if actual not in {"yes", "no"} or actual != expected:
             raise ValueError("effective Argo CD permissions do not match the read-only policy")
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--server-crt", default=os.environ.get("ARGOCD_SERVER_CRT_FILE"))
+    args = parser.parse_args()
     try:
-        verify()
+        verify(server_crt=args.server_crt)
     except (OSError, subprocess.SubprocessError, ValueError, TypeError):
         print("::error::Argo CD token identity or effective permissions failed closed.")
         return 1

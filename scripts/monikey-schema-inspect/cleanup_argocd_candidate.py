@@ -56,8 +56,12 @@ def revoke_candidate(
     child_env = dict(os.environ if environ is None else environ)
     if not child_env.get("ARGOCD_AUTH_TOKEN"):
         return False
+    command_prefix = ["argocd"]
+    certificate_file = child_env.get("ARGOCD_SERVER_CRT_FILE")
+    if certificate_file and Path(certificate_file).is_file():
+        command_prefix.extend(["--server-crt", certificate_file])
     project_result = runner(
-        ["argocd", "proj", "get", PROJECT, "--grpc-web", "--output", "json"],
+        [*command_prefix, "proj", "get", PROJECT, "--grpc-web", "--output", "json"],
         capture_output=True, text=True, timeout=20, check=False, env=child_env,
     )
     if project_result.returncode != 0:
@@ -70,7 +74,7 @@ def revoke_candidate(
         return False
 
     result = runner(
-        ["argocd", "proj", "role", "delete-token", PROJECT, ROLE,
+        [*command_prefix, "proj", "role", "delete-token", PROJECT, ROLE,
          str(metadata["iat"]), "--grpc-web"],
         capture_output=True, text=True, timeout=20, check=False, env=child_env,
     )
