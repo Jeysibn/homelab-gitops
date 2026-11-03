@@ -24,6 +24,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Run MoniKey schema inspection offline safety tests
+        run: python3 -m unittest discover -s scripts/monikey-schema-inspect/tests -p 'test_*.py' -v
+
       - name: Check shell scripts
         run: bash -n bootstrap.sh kubernetes/bootstrap/*.sh
 
