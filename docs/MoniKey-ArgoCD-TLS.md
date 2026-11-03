@@ -29,9 +29,9 @@ base64 -w0 /path/to/verified-argocd-trust.pem | \
     --env monikey-inspection-provisioning
 ```
 
-The bootstrap workflow accepts certificate PEM only, rejects private keys and out-of-validity certificates, writes it to a mode-`0600` runner temporary file, and passes it to the Argo CD CLI with the documented `--server-crt` option. The same trust file is used for preflight, project-role operations, candidate permission checks, and failure cleanup, then deleted. If the secret is absent, the CLI uses the runner's normal system trust store.
+The bootstrap and subsequent read-only Application audit use the same protected Environment secret and `prepare_argocd_server_crt.py` helper. The helper accepts certificate PEM only, rejects private keys and out-of-validity certificates, and writes a mode-`0600` runner temporary file. When configured, both workflows pass that file to every Argo CD CLI invocation with `--server-crt`, including identity/permission checks and Application/resource/diff reads. A configured but invalid, missing, or unreadable file stops the workflow; it never falls back silently to system trust. Both workflows remove the temporary certificate after success or failure. If the optional secret is absent, system trust remains in use.
 
-This format/validity check does not verify the bundle's authenticity. The owner must complete the independent comparison before storing it. TLS verification remains enabled; the bootstrap never uses `--insecure` or plaintext.
+This format/validity check does not verify the bundle's authenticity. The owner must independently verify the expected certificate fingerprint or CA through a trusted source separate from the endpoint before storing it. The audit report's presented fingerprint is evidence to compare, not a trust decision. TLS verification remains enabled; neither workflow uses `--insecure` or plaintext.
 
 ## Approval sequence
 
@@ -39,6 +39,6 @@ This format/validity check does not verify the bundle's authenticity. The owner 
 2. Dispatch the certificate diagnostic from `main` with confirmation and approve the protected Environment.
 3. Compare the reported fingerprint, hostname result, validity, chain, and trust result with an independently obtained expected certificate/CA. Do not proceed if the expected identity cannot be verified.
 4. Only after that comparison, configure `ARGOCD_SERVER_TRUST_CERT_B64` as an Environment secret. Do not commit or log the PEM value.
-5. Review and approve a separate dispatch of the bootstrap workflow. Its role/token writes still require independent owner approval; successful TLS inspection does not authorize those writes.
+5. After configuring the verified trust bundle, dispatch the read-only Application audit with confirmation and approve its protected Environment. The same trust configuration is then used for the later bootstrap workflow; review and approve a separate bootstrap dispatch because it creates a role/token. Successful TLS inspection or a read-only audit does not authorize those writes.
 
 No certificate diagnostic, secret configuration, Argo CD operation, sync, or deployment is performed by this repository change.

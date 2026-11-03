@@ -1,7 +1,10 @@
 import importlib.util
 import os
+import socket
+import ssl
 import subprocess
 import sys
+import threading
 import tempfile
 import unittest
 from pathlib import Path
@@ -114,6 +117,58 @@ class ArgoCertificateDiagnosticTests(unittest.TestCase):
         self.assertNotIn("private-fixture.invalid", report)
         self.assertNotIn("127.0.0.1", report)
 
+    def test_untrusted_self_signed_loopback_server_still_reports_leaf_fingerprint(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            certificate = root / "fixture-cert.pem"
+            key = root / "fixture-key.pem"
+            subprocess.run(
+                ["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+                 "-keyout", str(key), "-out", str(certificate), "-days", "1",
+                 "-subj", "/CN=localhost",
+                 "-addext", "subjectAltName=IP:127.0.0.1"],
+                capture_output=True, check=True,
+            )
+            expected = subprocess.run(
+                ["openssl", "x509", "-in", str(certificate), "-noout", "-fingerprint", "-sha256"],
+                capture_output=True, text=True, check=True,
+            ).stdout.split("=", 1)[1].strip().replace(":", "").upper()
+
+            context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            context.load_cert_chain(certificate, key)
+            listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            listener.bind(("127.0.0.1", 0))
+            listener.listen(1)
+            listener.settimeout(5)
+            port = listener.getsockname()[1]
+            server_errors = []
+
+            def serve_one_connection():
+                try:
+                    connection, _ = listener.accept()
+                    with connection:
+                        try:
+                            with context.wrap_socket(connection, server_side=True) as secured:
+                                secured.recv(1)
+                        except (ssl.SSLError, OSError):
+                            # The diagnostic intentionally aborts on the untrusted leaf.
+                            pass
+                except Exception as error:  # surfaced in the test thread
+                    server_errors.append(error)
+                finally:
+                    listener.close()
+
+            server = threading.Thread(target=serve_one_connection, daemon=True)
+            server.start()
+            report = module.inspect_certificate(f"127.0.0.1:{port}")
+            server.join(timeout=6)
+
+        self.assertFalse(server.is_alive(), "disposable TLS server did not finish")
+        self.assertEqual(server_errors, [])
+        self.assertIn(f"Leaf SHA-256 fingerprint: {expected}", report)
+        self.assertIn("Runner trust verification: self-signed certificate rejected", report)
+        self.assertNotIn("127.0.0.1", report)
+
     def test_hostname_mismatch_and_validity_boundaries_are_reported(self):
         report = module.inspect_certificate("127.0.0.1:443", runner=FakeOpenSSL())
         self.assertIn("Leaf hostname check: MISMATCH", report)
@@ -163,6 +218,53 @@ class ArgoCertificateDiagnosticTests(unittest.TestCase):
         self.assertNotIn("--insecure", job_script)
         self.assertIn("monikey-argocd-server-trust.pem", job_script)
 
+    def test_application_audit_uses_shared_optional_trust_for_every_cli_call(self):
+        import yaml
+
+        path = REPOSITORY / ".github/workflows/monikey-inspection-access-audit.yml"
+        workflow = yaml.safe_load(path.read_text(encoding="utf-8"))
+        job = workflow["jobs"]["inspect"]
+        all_steps = "\n".join(step.get("run", "") for step in job["steps"])
+        audit_step = next(step for step in job["steps"] if step.get("name", "").startswith(
+            "Inspect Application and compare"))
+        audit_script = audit_step["run"]
+
+        self.assertIn("ARGOCD_SERVER_TRUST_CERT_B64", path.read_text(encoding="utf-8"))
+        self.assertIn("prepare_argocd_server_crt.py", all_steps)
+        self.assertIn("--server-crt", audit_script)
+        self.assertIn("argocd_server_crt_args", audit_script)
+        for command in (
+            'argocd "${argocd_server_crt_args[@]}" app get monikey-inspection-access',
+            'argocd "${argocd_server_crt_args[@]}" app get-resource monikey-inspection-access',
+            'argocd "${argocd_server_crt_args[@]}" app diff monikey-inspection-access',
+        ):
+            self.assertIn(command, audit_script)
+        self.assertIn("verify_argocd_permissions.py", all_steps)
+        final_cleanup = next(step for step in job["steps"] if step.get("name") == "Remove temporary TLS trust file")
+        self.assertEqual(final_cleanup.get("if"), "always()")
+        self.assertIn("monikey-argocd-server-trust.pem", final_cleanup.get("run", ""))
+        for previous_result in (0, 1):
+            with self.subTest(previous_step_result=previous_result), tempfile.TemporaryDirectory() as directory:
+                trust_file = Path(directory) / "monikey-argocd-server-trust.pem"
+                trust_file.write_text("disposable certificate fixture")
+                result = subprocess.run(
+                    ["bash", "-c", final_cleanup["run"]],
+                    env={"RUNNER_TEMP": directory, "PREVIOUS_STEP_RESULT": str(previous_result)},
+                    capture_output=True, text=True, check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertFalse(trust_file.exists())
+        self.assertNotIn("--insecure", all_steps)
+
+    def test_permission_verifier_rejects_missing_configured_trust_file(self):
+        verifier_path = SCRIPT_DIR / "verify_argocd_permissions.py"
+        verifier_spec = importlib.util.spec_from_file_location("verify_argocd_permissions_missing", verifier_path)
+        verifier = importlib.util.module_from_spec(verifier_spec)
+        verifier_spec.loader.exec_module(verifier)
+        with self.assertRaisesRegex(ValueError, "trust certificate"):
+            verifier.verify(run=lambda *args, **kwargs: self.fail("Argo CD must not be invoked"),
+                            server_crt="/does/not/exist/trust.pem")
+
     def test_permission_verifier_uses_server_crt_for_every_argocd_call(self):
         verifier_path = SCRIPT_DIR / "verify_argocd_permissions.py"
         verifier_spec = importlib.util.spec_from_file_location("verify_argocd_permissions", verifier_path)
@@ -186,10 +288,13 @@ class ArgoCertificateDiagnosticTests(unittest.TestCase):
                 output = expected
             return SimpleNamespace(returncode=0, stdout=output, stderr="")
 
-        verifier.verify(run=runner, server_crt="/runner/temp/trust.pem")
+        with tempfile.TemporaryDirectory() as directory:
+            trust_file = Path(directory) / "trust.pem"
+            trust_file.write_text("fixture certificate")
+            verifier.verify(run=runner, server_crt=str(trust_file))
         self.assertTrue(calls)
         self.assertTrue(all(
-            command[1:3] == ["--server-crt", "/runner/temp/trust.pem"]
+            command[1:3] == ["--server-crt", str(trust_file)]
             for command in calls
         ))
 
