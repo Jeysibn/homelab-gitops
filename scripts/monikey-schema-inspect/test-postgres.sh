@@ -6,7 +6,7 @@ repo_root="$(cd -- "$script_dir/../.." && pwd)"
 monikey_source="${MONIKEY_SOURCE_DIR:-$repo_root/../monikey}"
 image="postgres:17.6-alpine"
 container="monikey-schema-inspection-test-$$"
-database="monikey_schema_test"
+database="monikey_dev"
 tmp_dir="${RUNNER_TEMP:-${TMPDIR:-/tmp}}"
 inventory="$tmp_dir/schema-inventory-${RANDOM}.json"
 passfile="$tmp_dir/schema-test-pgpass-${RANDOM}"
@@ -54,15 +54,42 @@ apply_file "$monikey_source/database/004_account_card_product.sql"
 apply_file "$monikey_source/database/005_kakeibo.sql"
 apply_file "$monikey_source/database/006_kakeibo_plan_presence.sql"
 
-# The test login has no table privileges; ordinary public catalog visibility is
-# sufficient. This is a disposable DB, never production.
-docker exec "$container" psql -X -v ON_ERROR_STOP=1 -U postgres -d "$database" \
-  -c "REVOKE TEMPORARY ON DATABASE $database FROM PUBLIC" >/dev/null
-docker exec "$container" psql -X -v ON_ERROR_STOP=1 -U postgres -d "$database" \
-  -c "CREATE ROLE monikey_schema_inspector LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION PASSWORD 'fixture-only-password'; GRANT CONNECT ON DATABASE $database TO monikey_schema_inspector;" >/dev/null
+provision_role() {
+  {
+    printf "\\set inspector_password '%s'\n" "$1"
+    cat "$script_dir/provision_role.sql"
+  } | docker exec --interactive "$container" \
+    psql -X -v ON_ERROR_STOP=1 -U postgres -d "$database" >/dev/null
+}
+
+# Use the same password-safe psql script as the guarded production workflow.
+# The fixture intentionally retains PostgreSQL's default PUBLIC TEMP privilege.
+provision_role fixture-only-password
 docker exec "$container" psql -X -v ON_ERROR_STOP=1 -U postgres -d "$database" -Atqc \
   "SELECT bool_and(NOT has_table_privilege('monikey_schema_inspector', format('public.%I', t), 'SELECT')) FROM unnest(ARRAY['accounts','categories','transactions','credit_card_payments','account_transfers','kakeibo_month_plans','kakeibo_weekly_reviews']) AS t" \
   | grep -Fx t >/dev/null
+docker exec "$container" psql -X -v ON_ERROR_STOP=1 -U postgres -d "$database" -Atqc \
+  "SELECT has_database_privilege('monikey_schema_inspector', '$database', 'TEMP') AND NOT EXISTS (SELECT 1 FROM pg_database d, LATERAL aclexplode(COALESCE(d.datacl, acldefault('d', d.datdba))) acl WHERE d.datname = '$database' AND acl.grantee = (SELECT oid FROM pg_roles WHERE rolname = 'monikey_schema_inspector') AND acl.privilege_type = 'TEMPORARY')" \
+  | grep -Fx t >/dev/null
+
+# Effective TEMP from PUBLIC is not separately granted to this role, and the
+# fixed READ ONLY transaction still rejects all CREATE commands.
+if docker exec "$container" psql -X -v ON_ERROR_STOP=1 -U monikey_schema_inspector -d "$database" \
+  -c 'BEGIN TRANSACTION READ ONLY; CREATE TEMP TABLE inspector_temp_blocked (id integer);' \
+  > /dev/null 2>&1; then
+  echo 'Read-only transaction unexpectedly allowed CREATE TEMP TABLE.' >&2
+  exit 1
+fi
+
+# Existing unsafe grants are never silently revoked or overwritten by rotation.
+docker exec "$container" psql -X -v ON_ERROR_STOP=1 -U postgres -d "$database" \
+  -c 'GRANT SELECT ON accounts TO monikey_schema_inspector' >/dev/null
+if provision_role fixture-rotated-password 2>/dev/null; then
+  echo 'Unsafe existing inspector grants were unexpectedly accepted.' >&2
+  exit 1
+fi
+docker exec "$container" psql -X -v ON_ERROR_STOP=1 -U postgres -d "$database" \
+  -c 'REVOKE SELECT ON accounts FROM monikey_schema_inspector' >/dev/null
 
 printf '127.0.0.1:5432:%s:monikey_schema_inspector:fixture-only-password\n' "$database" > "$passfile"
 chmod 600 "$passfile"

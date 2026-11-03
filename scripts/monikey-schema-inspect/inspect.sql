@@ -27,6 +27,16 @@ SELECT jsonb_build_object(
       'schema_create', pg_catalog.has_schema_privilege(r.rolname, 'public', 'CREATE'),
       'database_create', pg_catalog.has_database_privilege(r.rolname, current_database(), 'CREATE'),
       'database_temp', pg_catalog.has_database_privilege(r.rolname, current_database(), 'TEMP'),
+      'database_temp_direct', EXISTS (
+        SELECT 1
+        FROM pg_catalog.pg_database d,
+             LATERAL pg_catalog.aclexplode(
+               COALESCE(d.datacl, pg_catalog.acldefault('d', d.datdba))
+             ) acl
+        WHERE d.datname = current_database()
+          AND acl.grantee = r.oid
+          AND acl.privilege_type = 'TEMPORARY'
+      ),
       'owns_database', EXISTS (
         SELECT 1 FROM pg_catalog.pg_database d
         WHERE d.datname = current_database() AND d.datdba = r.oid
