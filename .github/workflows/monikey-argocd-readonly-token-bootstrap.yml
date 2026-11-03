@@ -141,13 +141,26 @@ jobs:
           trap 'rm -rf "$work"' EXIT
           chmod 700 "$work"
 
-          if ! timeout 30s argocd account get-user-info --grpc-web --output json \
-              > "$work/bootstrap-identity.json" 2> "$work/argocd-error.log"; then
+          run_argocd_read() {
+            local stdout_file="$1" stderr_file="$2" status
+            shift 2
+            if timeout 30s argocd "$@" > "$stdout_file" 2> "$stderr_file"; then
+              return 0
+            else
+              status=$?
+            fi
+            python3 scripts/monikey-schema-inspect/diagnose_argocd_failure.py \
+              "$stderr_file" "$stdout_file" "$status"
+            return 1
+          }
+
+          if ! run_argocd_read "$work/bootstrap-identity.json" "$work/argocd-error.log" \
+              account get-user-info --grpc-web --output json; then
             echo '::error::Could not identify the existing Argo CD credential; stopped before writes.'
             exit 1
           fi
-          if ! timeout 30s argocd account can-i get projects default --grpc-web \
-              > "$work/can-get-project.txt" 2> "$work/argocd-error.log"; then
+          if ! run_argocd_read "$work/can-get-project.txt" "$work/argocd-error.log" \
+              account can-i get projects default --grpc-web; then
             echo '::error::Could not determine whether the existing credential can read the default AppProject; stopped before writes.'
             exit 1
           fi
@@ -155,8 +168,8 @@ jobs:
             echo '::error::Existing ARGOCD_AUTH_TOKEN cannot read the fixed default AppProject; stopped before writes.'
             exit 1
           fi
-          if ! timeout 30s argocd proj get default --grpc-web --output json \
-              > "$work/default-project.json" 2> "$work/argocd-error.log"; then
+          if ! run_argocd_read "$work/default-project.json" "$work/argocd-error.log" \
+              proj get default --grpc-web --output json; then
             echo '::error::Could not inspect the live default AppProject; stopped before writes.'
             exit 1
           fi
@@ -167,8 +180,8 @@ jobs:
             echo '::error::Default AppProject role state is unknown; stopped before writes.'
             exit 1
           }
-          if ! timeout 30s argocd account can-i update projects default --grpc-web \
-              > "$work/can-update-project.txt" 2> "$work/argocd-error.log"; then
+          if ! run_argocd_read "$work/can-update-project.txt" "$work/argocd-error.log" \
+              account can-i update projects default --grpc-web; then
             echo '::error::Could not determine whether the existing credential can manage default project roles; stopped before writes.'
             exit 1
           fi
