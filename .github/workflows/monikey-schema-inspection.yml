@@ -1,0 +1,234 @@
+name: MoniKey read-only schema inspection
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_schema_inspection:
+        description: Confirm a catalog-only read of the live MoniKey PostgreSQL schema
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: monikey-schema-inspection
+  cancel-in-progress: false
+
+jobs:
+  environment-preflight:
+    name: Verify protected inspection environment
+    if: github.ref == 'refs/heads/main' && inputs.confirm_schema_inspection
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    outputs:
+      protected: ${{ steps.environment.outputs.protected }}
+    steps:
+      - name: Require an existing environment with a required reviewer
+        id: environment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          REPOSITORY_OWNER: ${{ github.repository_owner }}
+          ENVIRONMENT_NAME: monikey-production-inspection
+        shell: bash
+        run: |
+          set -euo pipefail
+          response="$RUNNER_TEMP/environment.json"
+          policies="$RUNNER_TEMP/environment-branches.json"
+          status="$(curl --silent --show-error --connect-timeout 5 --max-time 15 \
+            --output "$response" --write-out '%{http_code}' \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            --header 'Accept: application/vnd.github+json' \
+            --header 'X-GitHub-Api-Version: 2022-11-28' \
+            "$GITHUB_API_URL/repos/$REPOSITORY/environments/$ENVIRONMENT_NAME")"
+          [[ "$status" == 200 ]] || {
+            echo '::error::Protected GitHub Environment is missing or not readable.'
+            exit 1
+          }
+          policy_status="$(curl --silent --show-error --connect-timeout 5 --max-time 15 \
+            --output "$policies" --write-out '%{http_code}' \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            --header 'Accept: application/vnd.github+json' \
+            --header 'X-GitHub-Api-Version: 2022-11-28' \
+            "$GITHUB_API_URL/repos/$REPOSITORY/environments/$ENVIRONMENT_NAME/deployment-branch-policies")"
+          [[ "$policy_status" == 200 ]] || {
+            echo '::error::Environment main-only branch policy is missing or not readable.'
+            exit 1
+          }
+          python3 - "$response" "$policies" <<'PY'
+          import json, sys
+          data = json.load(open(sys.argv[1], encoding="utf-8"))
+          branches = json.load(open(sys.argv[2], encoding="utf-8"))
+          owner = __import__("os").environ["REPOSITORY_OWNER"].casefold()
+          rules = [rule for rule in data.get("protection_rules", [])
+                   if rule.get("type") == "required_reviewers"]
+          owner_required = any(
+              rule.get("prevent_self_review") is True
+              and any(reviewer.get("type") == "User"
+                      and (reviewer.get("reviewer") or {}).get("login", "").casefold() == owner
+                      for reviewer in rule.get("reviewers", []))
+              for rule in rules
+          )
+          if not owner_required:
+              print("::error::Environment must require repository-owner review and prevent self-review.")
+              raise SystemExit(1)
+          policy = data.get("deployment_branch_policy") or {}
+          branch_names = [item.get("name") for item in branches.get("branch_policies", [])]
+          if (policy.get("custom_branch_policies") is not True
+                  or policy.get("protected_branches") is not False
+                  or branch_names != ["main"]):
+              print("::error::Environment must allow exactly the main branch.")
+              raise SystemExit(1)
+          print("Owner review, self-review protection, and main-only environment policy verified.")
+          PY
+          echo 'protected=true' >> "$GITHUB_OUTPUT"
+          rm -f "$response" "$policies"
+
+  inspect:
+    name: Inspect MoniKey schema (read only)
+    needs: environment-preflight
+    if: needs.environment-preflight.outputs.protected == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    environment:
+      name: monikey-production-inspection
+    env:
+      KUBECONFIG_B64: ${{ secrets.MONIKEY_SCHEMA_INSPECTION_KUBECONFIG_B64 }}
+      DB_PASSWORD: ${{ secrets.MONIKEY_SCHEMA_INSPECTION_DB_PASSWORD }}
+      TS_OAUTH_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+      TS_OAUTH_SECRET: ${{ secrets.TS_OAUTH_SECRET }}
+      EXPECTED_CONTEXT: ${{ vars.MONIKEY_SCHEMA_EXPECTED_CONTEXT }}
+      EXPECTED_API_SERVER: ${{ vars.MONIKEY_SCHEMA_EXPECTED_API_SERVER }}
+    steps:
+      - name: Checkout reviewed GitOps script
+        uses: actions/checkout@v4
+
+      - name: Fail closed if dedicated credentials or target identity are absent
+        shell: bash
+        run: |
+          set -euo pipefail
+          : "${KUBECONFIG_B64:?Configure the dedicated inspection kubeconfig secret}"
+          : "${DB_PASSWORD:?Configure the dedicated catalog-only PostgreSQL password}"
+          : "${TS_OAUTH_CLIENT_ID:?Configure Tailscale connectivity credentials}"
+          : "${TS_OAUTH_SECRET:?Configure Tailscale connectivity credentials}"
+          : "${EXPECTED_CONTEXT:?Configure the approved cluster context name as an Environment variable}"
+          : "${EXPECTED_API_SERVER:?Configure the approved cluster API server as an Environment variable}"
+
+      - name: Connect to Tailscale
+        uses: tailscale/github-action@v2
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
+          args: --accept-routes
+
+      - name: Configure the dedicated namespace-scoped kubeconfig
+        shell: bash
+        run: |
+          set -euo pipefail
+          install -d -m 700 "$RUNNER_TEMP/kube"
+          printf '%s' "$KUBECONFIG_B64" | base64 --decode > "$RUNNER_TEMP/kube/config"
+          chmod 600 "$RUNNER_TEMP/kube/config"
+          echo "KUBECONFIG=$RUNNER_TEMP/kube/config" >> "$GITHUB_ENV"
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: v1.36.0
+
+      - name: Verify fixed cluster, namespace, pod and database identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          actual_context="$(kubectl config current-context)"
+          [[ "$actual_context" == "$EXPECTED_CONTEXT" ]] || {
+            echo '::error::Active Kubernetes context does not match the approved context.'
+            exit 1
+          }
+          actual_server="$(kubectl config view --minify -o jsonpath='{.clusters[0].cluster.server}')"
+          [[ "$actual_server" == "$EXPECTED_API_SERVER" ]] || {
+            echo '::error::Kubernetes API server does not match the approved cluster identity.'
+            exit 1
+          }
+          kubectl --request-timeout=10s auth can-i get pods --namespace monikey --quiet
+          kubectl --request-timeout=10s auth can-i create pods/portforward --namespace monikey --resource-name=postgres-0 --quiet
+          kubectl --request-timeout=10s get pod postgres-0 --namespace monikey -o json \
+            | python3 scripts/monikey-schema-inspect/check_pod.py
+
+      - name: Start a fixed local port-forward
+        shell: bash
+        run: |
+          set -euo pipefail
+          kubectl port-forward --namespace monikey pod/postgres-0 15432:5432 \
+            > "$RUNNER_TEMP/port-forward.log" 2>&1 &
+          echo "$!" > "$RUNNER_TEMP/port-forward.pid"
+          ready=false
+          for _ in {1..30}; do
+            if (echo >/dev/tcp/127.0.0.1/15432) >/dev/null 2>&1; then
+              ready=true
+              break
+            fi
+            sleep 1
+          done
+          [[ "$ready" == true ]] || {
+            echo '::error::PostgreSQL port-forward did not become ready.'
+            exit 1
+          }
+
+      - name: Run catalog-only inventory with a fixed PostgreSQL client
+        id: inspect
+        shell: bash
+        run: |
+          set -euo pipefail
+          passfile="$RUNNER_TEMP/pgpass"
+          inventory="$RUNNER_TEMP/schema-inventory.json"
+          report="$RUNNER_TEMP/schema-report.json"
+          python3 scripts/monikey-schema-inspect/write_pgpass.py "$passfile" <<< "$DB_PASSWORD"
+          chmod 600 "$passfile"
+          if ! docker run --rm --network host \
+            --env PGPASSFILE=/run/secrets/pgpass \
+            --env PGCONNECT_TIMEOUT=5 \
+            --volume "$passfile:/run/secrets/pgpass:ro" \
+            --volume "$GITHUB_WORKSPACE/scripts/monikey-schema-inspect/inspect.sql:/inspect.sql:ro" \
+            postgres:17.6-alpine psql -X -q -v ON_ERROR_STOP=1 -A -t \
+              -h 127.0.0.1 -p 15432 -U monikey_schema_inspector -d monikey_dev \
+              -f /inspect.sql > "$inventory" 2> "$RUNNER_TEMP/psql-error.log"; then
+            python3 scripts/monikey-schema-inspect/classify.py "$inventory" \
+              --output "$report" --run-id "$GITHUB_RUN_ID" --commit "$GITHUB_SHA" \
+              --expected-database monikey_dev --unavailable 'Catalog query failed; inspect workflow status.' || true
+            echo "report=$report" >> "$GITHUB_OUTPUT"
+            echo '::error::Catalog inspection did not complete; all migrations are UNKNOWN.'
+            exit 1
+          fi
+          set +e
+          python3 scripts/monikey-schema-inspect/classify.py "$inventory" \
+            --output "$report" --run-id "$GITHUB_RUN_ID" \
+            --commit "$GITHUB_SHA" --expected-database monikey_dev
+          result=$?
+          set -e
+          if [[ -f "$report" ]]; then echo "report=$report" >> "$GITHUB_OUTPUT"; fi
+          exit "$result"
+
+      - name: Upload redacted catalog report
+        if: always() && steps.inspect.outputs.report != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: monikey-schema-inspection-${{ github.run_id }}
+          path: ${{ steps.inspect.outputs.report }}
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Remove temporary credentials and stop tunnel
+        if: always()
+        shell: bash
+        run: |
+          if [[ -f "$RUNNER_TEMP/port-forward.pid" ]]; then
+            kill "$(cat "$RUNNER_TEMP/port-forward.pid")" 2>/dev/null || true
+          fi
+          rm -f "$RUNNER_TEMP/pgpass" "$RUNNER_TEMP/kube/config" \
+            "$RUNNER_TEMP/port-forward.pid" "$RUNNER_TEMP/port-forward.log" \
+            "$RUNNER_TEMP/schema-inventory.json" "$RUNNER_TEMP/schema-report.json" \
+            "$RUNNER_TEMP/psql-error.log"
