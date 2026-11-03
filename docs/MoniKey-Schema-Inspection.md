@@ -18,6 +18,27 @@ The dedicated child Application is `monikey-inspection-access`. The normal `moni
 
 The inspector ServiceAccount has a namespaced Role limited to `get pods/postgres-0` and `create pods/portforward` for `postgres-0`. It has no `pods/exec`, Secret, workload, Role, or cluster-wide permissions. A separate RoleBinding grants the existing `monikey-backup` ServiceAccount only `create` on `serviceaccounts/token` named `monikey-schema-inspector`, so the protected provisioning workflow can request a short-lived inspector token. The backup identity cannot create RBAC or tokens for another service account. Port-forward permission opens a network tunnel; PostgreSQL privileges remain the data boundary.
 
+### Dedicated Argo CD audit token
+
+The GitOps repository installs the upstream Argo CD v3.5.1 manifests and creates the root Application, but it does not define `argocd-cm`, `argocd-rbac-cm`, or an Argo RBAC policy. The live `policy.default`, project-role configuration, and existing token identities are therefore **unknown from this repository**. Do not reuse `ARGOCD_AUTH_TOKEN` from the Argo CD Sync workflow and do not change or rotate it for inspection.
+
+Prefer an AppProject role token because it is scoped to the `default` project. After reviewing the live `default` AppProject and effective default policy, an owner with project-update authority can configure a dedicated role with exactly one policy, then mint a short-lived token. These are the documented [project-role commands](https://argo-cd.readthedocs.io/en/release-3.5/user-guide/projects/):
+
+```bash
+argocd proj role create default monikey-inspection-reader
+argocd proj role add-policy default monikey-inspection-reader \
+  --action get --permission allow --object monikey-inspection-access
+argocd proj role create-token default monikey-inspection-reader --expires-in 1h
+```
+
+Run these commands only from an authorized administrative session after reviewing the target project and default policy. The token is printed once; place it directly in the protected `monikey-inspection-provisioning` Environment as `ARGOCD_READONLY_AUTH_TOKEN`. Do not put it in shell history, repository files, workflow logs, or artifacts. The expected token identity is `proj:default:monikey-inspection-reader`; the workflow checks that identity so a token from the sync workflow (for example, `admin`) is rejected.
+
+Argo CD grants every authenticated token at least the permissions in `policy.default`, and a default allow cannot be removed by a user-specific deny ([RBAC evaluation rules](https://argo-cd.readthedocs.io/en/release-3.5/operator-manual/rbac/)). Before any Application reads, the workflow uses the documented [`argocd account can-i` command](https://argo-cd.readthedocs.io/en/release-3.5/user-guide/commands/argocd_account_can-i/) to require `get` on `default/monikey-inspection-access` and deny Application sync, rollback, override, create, update, delete, fine-grained resource update/delete, and resource actions. It also checks broad write permissions across Applications, ApplicationSets, clusters, projects, repositories, certificates, GPG keys, accounts, exec, and extensions. Any unexpected `yes`, unknown output, token identity mismatch, or CLI error stops the job. These checks evaluate the token's effective permissions, including inherited default and group/project-role policy. The repository cannot attest the live Argo RBAC policy until the checks are run.
+
+This read-only audit token setup is separate from the backup identity, PostgreSQL inspector login, Kubernetes inspector token, and the Argo CD Sync token. Token provisioning and RBAC changes are not performed by this workflow and require separate owner approval.
+
+Argo CD v3.5.1's [`ApplicationStatus.ResourceStatus` type](https://github.com/argoproj/argo-cd/blob/v3.5.1/pkg/apis/application/v1alpha1/types.go#L2063-L2088) marks per-resource `status` and `health` as optional JSON fields. Resource health can also be reported through the Application resource tree rather than inline status, depending on the Argo CD configuration. The audit therefore does not assume that ServiceAccount, Role, and RoleBinding entries always include those fields: missing or unknown Application/resource status, missing health, health other than `Healthy`/expected `Missing`, or a mismatch between sync status and the read-only diff blocks a `SAFE TO SYNC` verdict. CLI command forms are checked against the pinned v3.5.1 help; the live controller output is still unknown until an approved audit.
+
 ## PostgreSQL TEMP privilege behavior
 
 PostgreSQL grants `CONNECT` and `TEMPORARY` to `PUBLIC` by default. Revoking `TEMPORARY` from `PUBLIC` could alter behavior for existing database users, so this provisioning design does not do that. The role-creation script gives the inspector no direct `TEMP` privilege and rejects an existing role with direct `TEMP`, `CREATE`, memberships, ownership, or financial-table privileges. The inventory records effective `TEMP` separately from a direct grant and accepts only the `PUBLIC`-inherited case with no role memberships. The fixed inspection SQL starts a `READ ONLY` transaction; PostgreSQL 17 disallows all `CREATE` commands in that transaction, including temporary-table creation. The disposable PostgreSQL test retains the default `PUBLIC` ACL, confirms the effective privilege is inherited rather than direct, and verifies that `CREATE TEMP TABLE` fails in the read-only transaction. No live ACL was inspected or changed.

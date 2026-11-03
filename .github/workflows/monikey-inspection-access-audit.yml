@@ -1,0 +1,185 @@
+name: Read-only MoniKey inspection-access audit
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_read_only_audit:
+        description: Confirm a read-only Argo CD inspection of monikey-inspection-access
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: monikey-inspection-access-audit
+  cancel-in-progress: false
+
+jobs:
+  environment-preflight:
+    name: Verify protected provisioning Environment
+    if: github.ref == 'refs/heads/main' && inputs.confirm_read_only_audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    outputs:
+      protected: ${{ steps.environment.outputs.protected }}
+    steps:
+      - name: Checkout reviewed Environment validator
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Verify owner approval and main-only Environment
+        id: environment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          REPOSITORY_OWNER: ${{ github.repository_owner }}
+          ENVIRONMENT_NAME: monikey-inspection-provisioning
+        shell: bash
+        run: |
+          set -euo pipefail
+          response="$RUNNER_TEMP/environment.json"
+          policies="$RUNNER_TEMP/environment-branches.json"
+          trap 'rm -f "$response" "$policies"' EXIT
+          status="$(curl --silent --show-error --connect-timeout 5 --max-time 15 \
+            --output "$response" --write-out '%{http_code}' \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            --header 'Accept: application/vnd.github+json' \
+            --header 'X-GitHub-Api-Version: 2022-11-28' \
+            "$GITHUB_API_URL/repos/$REPOSITORY/environments/$ENVIRONMENT_NAME")"
+          [[ "$status" == 200 ]] || {
+            echo '::error::Protected provisioning Environment is missing or unreadable.'
+            exit 1
+          }
+          policy_status="$(curl --silent --show-error --connect-timeout 5 --max-time 15 \
+            --output "$policies" --write-out '%{http_code}' \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            --header 'Accept: application/vnd.github+json' \
+            --header 'X-GitHub-Api-Version: 2022-11-28' \
+            "$GITHUB_API_URL/repos/$REPOSITORY/environments/$ENVIRONMENT_NAME/deployment-branch-policies")"
+          [[ "$policy_status" == 200 ]] || {
+            echo '::error::Provisioning Environment branch policy is missing or unreadable.'
+            exit 1
+          }
+          python3 scripts/monikey-schema-inspect/validate_environment.py \
+            "$response" "$policies" "$REPOSITORY_OWNER" \
+            --environment-name "$ENVIRONMENT_NAME"
+          echo 'protected=true' >> "$GITHUB_OUTPUT"
+
+  inspect:
+    name: Read-only Argo CD application and resource audit
+    needs: environment-preflight
+    if: needs.environment-preflight.outputs.protected == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    environment:
+      name: monikey-inspection-provisioning
+    env:
+      ARGOCD_SERVER: ${{ secrets.ARGOCD_SERVER }}
+      ARGOCD_AUTH_TOKEN: ${{ secrets.ARGOCD_READONLY_AUTH_TOKEN }}
+      TS_OAUTH_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+      TS_OAUTH_SECRET: ${{ secrets.TS_OAUTH_SECRET }}
+      ARGOCD_VERSION: v3.5.1
+    steps:
+      - name: Checkout reviewed audit script
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Fail closed when a dedicated read-only token is unavailable
+        shell: bash
+        run: |
+          set -euo pipefail
+          : "${ARGOCD_SERVER:?Configure the existing Argo CD server secret}"
+          : "${ARGOCD_AUTH_TOKEN:?Configure ARGOCD_READONLY_AUTH_TOKEN in the protected Environment}"
+          : "${TS_OAUTH_CLIENT_ID:?Configure Tailscale connectivity credentials}"
+          : "${TS_OAUTH_SECRET:?Configure Tailscale connectivity credentials}"
+
+      - name: Connect to Tailscale
+        uses: tailscale/github-action@v2
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
+          args: --accept-routes
+
+      - name: Install pinned Argo CD CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_url="https://github.com/argoproj/argo-cd/releases/download/${ARGOCD_VERSION}"
+          cd "$RUNNER_TEMP"
+          curl --fail --silent --show-error --location --retry 3 \
+            "$release_url/argocd-linux-amd64" -o argocd-linux-amd64
+          curl --fail --silent --show-error --location --retry 3 \
+            "$release_url/cli_checksums.txt" -o cli_checksums.txt
+          awk '$2 == "argocd-linux-amd64" { print }' cli_checksums.txt > argocd.sha256
+          test -s argocd.sha256
+          sha256sum --check argocd.sha256
+          sudo install -m 0755 argocd-linux-amd64 /usr/local/bin/argocd
+
+      - name: Verify the token identity and effective read-only permissions
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/monikey-schema-inspect/verify_argocd_permissions.py
+
+      - name: Inspect Application and compare resources without applying changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          work="$(mktemp -d "$RUNNER_TEMP/monikey-access-audit.XXXXXX")"
+          trap 'bash scripts/monikey-schema-inspect/cleanup_audit_temp.sh "$RUNNER_TEMP" "$work"' EXIT
+          chmod 700 "$work"
+          install -d -m 700 "$work/live"
+
+          if ! argocd app get monikey-inspection-access --grpc-web --output json \
+              > "$work/application.json" 2> "$work/argocd-error.log"; then
+            echo '::error::Argo CD could not read the fixed Application; no live-state conclusion is available.'
+            exit 1
+          fi
+          chmod 600 "$work/application.json"
+          python3 scripts/monikey-schema-inspect/audit_argocd_application.py \
+            plan-live-reads "$work/application.json" "$work/live-reads.txt"
+
+          while IFS= read -r resource; do
+            [[ -n "$resource" ]] || continue
+            case "$resource" in
+              inspector-sa)
+                kind=ServiceAccount; group=''; name=monikey-schema-inspector ;;
+              inspector-role)
+                kind=Role; group=rbac.authorization.k8s.io; name=monikey-schema-inspector ;;
+              inspector-binding)
+                kind=RoleBinding; group=rbac.authorization.k8s.io; name=monikey-schema-inspector ;;
+              token-issuer-role)
+                kind=Role; group=rbac.authorization.k8s.io; name=monikey-inspection-token-issuer ;;
+              token-issuer-binding)
+                kind=RoleBinding; group=rbac.authorization.k8s.io; name=monikey-inspection-token-issuer ;;
+              *) echo '::error::Unexpected resource in the fixed audit plan.'; exit 1 ;;
+            esac
+            group_args=()
+            [[ -z "$group" ]] || group_args=(--group "$group")
+            if ! argocd app get-resource monikey-inspection-access --grpc-web \
+                --kind "$kind" --resource-name "$name" --app-namespace argocd \
+                "${group_args[@]}" --filter-fields metadata.name,metadata.namespace,automountServiceAccountToken,rules,subjects,roleRef \
+                --output json > "$work/live/$resource.json" 2> "$work/argocd-error.log"; then
+              echo '::error::A named live resource could not be read; RBAC validation is incomplete.'
+              exit 1
+            fi
+          done < "$work/live-reads.txt"
+
+          set +e
+          argocd app diff monikey-inspection-access --grpc-web \
+            > "$work/diff.txt" 2> "$work/argocd-error.log"
+          diff_result=$?
+          set -e
+          if [[ "$diff_result" -gt 1 ]]; then
+            echo '::error::Argo CD could not complete the read-only diff.'
+            exit 1
+          fi
+          python3 scripts/monikey-schema-inspect/audit_argocd_application.py \
+            report "$work/application.json" "$diff_result" "$work/live" "$work/report.json"
