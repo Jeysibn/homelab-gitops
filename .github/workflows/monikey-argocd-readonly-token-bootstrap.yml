@@ -89,6 +89,7 @@ jobs:
       - name: Require fixed credentials and target
         env:
           ARGOCD_SERVER: ${{ secrets.ARGOCD_SERVER }}
+          ARGOCD_AUTH_TOKEN: ${{ secrets.ARGOCD_AUTH_TOKEN }}
           SECRET_WRITER_TOKEN: ${{ secrets.MONIKEY_ENVIRONMENT_SECRET_WRITER_TOKEN }}
           TS_OAUTH_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
           TS_OAUTH_SECRET: ${{ secrets.TS_OAUTH_SECRET }}
@@ -192,7 +193,6 @@ jobs:
           work="$RUNNER_TEMP/monikey-argocd-token-bootstrap"
           install -d -m 700 "$work"
           role_created=false
-          token_created=false
           stored=false
           cleanup() {
             result=$?
@@ -232,18 +232,21 @@ jobs:
             echo '::error::Could not verify the default AppProject role after preparation.'
             exit 1
           fi
-          if ! python3 scripts/monikey-schema-inspect/prepare_argocd_readonly_token.py \
-              role-plan "$work/project-after-write.json" > /dev/null; then
+          if ! role_plan_after="$(python3 scripts/monikey-schema-inspect/prepare_argocd_readonly_token.py \
+              role-ready "$work/project-after-write.json" 2> "$work/role-validation-error.log")"; then
             echo '::error::The live project role is not exactly the approved role.'
             exit 1
           fi
+          [[ "$role_plan_after" == reuse ]] || {
+            echo '::error::The expected project role is still absent after creation; token minting stopped.'
+            exit 1
+          }
 
           if ! argocd proj role create-token default monikey-inspection-reader \
               --expires-in 1h --grpc-web > "$work/token-response.txt" 2> "$work/argocd-error.log"; then
             echo '::error::Could not mint the fixed one-hour project-role token.'
             exit 1
           fi
-          token_created=true
           chmod 600 "$work/token-response.txt"
           python3 scripts/monikey-schema-inspect/prepare_argocd_readonly_token.py \
             extract-token "$work/token-response.txt" "$work/candidate-token"

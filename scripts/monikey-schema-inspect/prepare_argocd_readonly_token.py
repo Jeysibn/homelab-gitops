@@ -46,6 +46,13 @@ def role_plan(document: object) -> str:
     return "reuse"
 
 
+def require_role_ready(document: object) -> str:
+    result = role_plan(document)
+    if result != "reuse":
+        raise ValueError("inspection project role is still absent after creation")
+    return result
+
+
 def extract_token(output: str) -> str:
     matches = TOKEN_PATTERN.findall(output)
     if len(matches) != 1:
@@ -79,6 +86,8 @@ def main() -> int:
     subparsers = parser.add_subparsers(dest="command", required=True)
     plan_parser = subparsers.add_parser("role-plan")
     plan_parser.add_argument("project_json", type=Path)
+    ready_parser = subparsers.add_parser("role-ready")
+    ready_parser.add_argument("project_json", type=Path)
     token_parser = subparsers.add_parser("extract-token")
     token_parser.add_argument("response_file", type=Path)
     token_parser.add_argument("token_file", type=Path)
@@ -87,6 +96,8 @@ def main() -> int:
     try:
         if args.command == "role-plan":
             print(role_plan(json.loads(args.project_json.read_text(encoding="utf-8"))))
+        elif args.command == "role-ready":
+            print(require_role_ready(json.loads(args.project_json.read_text(encoding="utf-8"))))
         else:
             token = extract_token(args.response_file.read_text(encoding="utf-8"))
             write_private(args.token_file, token)

@@ -1,6 +1,7 @@
-import importlib.util
 import base64
+import importlib.util
 import json
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -29,6 +30,12 @@ def project(roles=None):
 class ReadonlyTokenBootstrapTests(unittest.TestCase):
     def test_missing_role_plans_fixed_creation(self):
         self.assertEqual(module.role_plan(project()), "create")
+        with self.assertRaisesRegex(ValueError, "still absent after creation"):
+            module.require_role_ready(project())
+
+    def test_role_ready_accepts_only_the_exact_existing_role(self):
+        role = {"name": module.ROLE, "policies": [module.EXPECTED_POLICY], "groups": []}
+        self.assertEqual(module.require_role_ready(project([role])), "reuse")
 
     def test_exact_role_is_reused_without_mutation(self):
         role = {
@@ -92,6 +99,17 @@ class ReadonlyTokenBootstrapTests(unittest.TestCase):
         self.assertNotIn("argocd app sync", workflow)
         self.assertNotIn("kubectl", workflow)
         self.assertNotIn("upload-artifact", workflow)
+
+        credential_step = workflow.split("      - name: Require fixed credentials and target", 1)[1].split(
+            "      - name: Connect to Tailscale", 1
+        )[0]
+        declared = set(re.findall(r"^\s{10}([A-Z][A-Z0-9_]+): \$\{\{", credential_step, re.MULTILINE))
+        required = set(re.findall(r': "\$\{([A-Z][A-Z0-9_]+):\?', credential_step))
+        self.assertEqual(required, {
+            "ARGOCD_SERVER", "ARGOCD_AUTH_TOKEN", "SECRET_WRITER_TOKEN",
+            "TS_OAUTH_CLIENT_ID", "TS_OAUTH_SECRET",
+        })
+        self.assertTrue(required.issubset(declared))
         bootstrap_job = workflow.split("  bootstrap:", 1)[1]
         job_environment = bootstrap_job.split("    steps:", 1)[0]
         self.assertNotIn("ARGOCD_AUTH_TOKEN:", job_environment)
@@ -107,6 +125,8 @@ class ReadonlyTokenBootstrapTests(unittest.TestCase):
         self.assertLess(workflow.index("argocd account can-i update projects default"), write_index)
         self.assertLess(workflow.index("argocd proj get default --grpc-web --output json"), write_index)
         mint = workflow.split("      - name: Create only the fixed role", 1)[1]
+        self.assertIn('role-ready "$work/project-after-write.json"', mint)
+        self.assertIn('[[ "$role_plan_after" == reuse ]]', mint)
         self.assertLess(mint.index("verify_argocd_permissions.py"), mint.index("gh secret set"))
         self.assertIn('if [[ "$result" -ne 0 && "$stored" == false && "$role_created" == true ]]', mint)
 
