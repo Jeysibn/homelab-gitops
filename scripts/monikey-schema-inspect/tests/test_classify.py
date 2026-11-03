@@ -330,6 +330,18 @@ class ClassificationTests(unittest.TestCase):
         self.assertIn("monikey_schema_inspector", workflow)
         self.assertIn("-d monikey_dev", workflow)
 
+    def test_environment_preflight_checks_out_validator_without_credentials(self):
+        workflow = (ROOT.parents[1] / ".github/workflows/monikey-schema-inspection.yml").read_text()
+        preflight = workflow.split("  environment-preflight:", 1)[1].split("\n  inspect:", 1)[0]
+        checkout = preflight.index("uses: actions/checkout@v4")
+        validator = preflight.index("python3 scripts/monikey-schema-inspect/validate_environment.py")
+        self.assertLess(checkout, validator)
+        self.assertIn("persist-credentials: false", preflight)
+        inspect = workflow.split("  inspect:", 1)[1]
+        inspect_checkout = inspect.index("uses: actions/checkout@v4")
+        for script in ("check_pod.py", "write_pgpass.py", "inspect.sql", "classify.py"):
+            self.assertLess(inspect_checkout, inspect.index(script))
+
     def test_pr_validation_runs_offline_safety_suite(self):
         ci = (ROOT.parents[1] / ".github/workflows/k3s-ci.yml").read_text()
         self.assertIn("python3 -m unittest discover -s scripts/monikey-schema-inspect/tests", ci)

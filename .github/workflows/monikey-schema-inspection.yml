@@ -26,6 +26,11 @@ jobs:
     outputs:
       protected: ${{ steps.environment.outputs.protected }}
     steps:
+      - name: Checkout reviewed GitOps validator
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
       - name: Verify owner approval and main-only Environment policy
         id: environment
         env:
