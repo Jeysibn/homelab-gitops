@@ -20,6 +20,8 @@ The inspector ServiceAccount has a namespaced Role limited to `get pods/postgres
 
 ### Dedicated Argo CD audit token
 
+For the confirmed TLS verification failure, see [MoniKey Argo CD TLS inspection and trust](MoniKey-ArgoCD-TLS.md). It describes the protected certificate-metadata diagnostic and the independent verification required before configuring a CA bundle. The bootstrap supports that approved bundle through Argo CD CLI `--server-crt`; it never disables certificate verification.
+
 The GitOps repository installs the upstream Argo CD v3.5.1 manifests and creates the root Application, but it does not define `argocd-cm`, `argocd-rbac-cm`, or an Argo RBAC policy. The live `policy.default`, project-role configuration, and existing token identities are therefore **unknown from this repository**. Do not reuse `ARGOCD_AUTH_TOKEN` from the Argo CD Sync workflow and do not change or rotate it for inspection.
 
 Prefer an AppProject role token because it is scoped to the `default` project. The manual, approval-gated **Bootstrap MoniKey read-only Argo CD token** workflow is prepared to inspect the live `default` AppProject and check the existing `ARGOCD_AUTH_TOKEN` with the read-only `argocd account can-i` operation before it changes anything. It stops before writes unless that credential can read and update the fixed AppProject. A missing `update projects default` permission is reported as the exact blocker; the workflow never tries another credential or escalates access.

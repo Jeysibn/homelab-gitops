@@ -127,6 +127,16 @@ jobs:
           sudo install -m 0755 argocd-linux-amd64 /usr/local/bin/argocd
           argocd version --client
 
+      - name: Prepare optional owner-verified Argo CD trust certificate
+        env:
+          ARGOCD_SERVER_TRUST_CERT_B64: ${{ secrets.ARGOCD_SERVER_TRUST_CERT_B64 }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          python3 scripts/monikey-schema-inspect/prepare_argocd_server_crt.py \
+            "$RUNNER_TEMP/monikey-argocd-server-trust.pem"
+
       - name: Inspect current authority and default AppProject before writes
         id: preflight
         env:
@@ -140,11 +150,16 @@ jobs:
           install -d -m 700 "$work"
           trap 'rm -rf "$work"' EXIT
           chmod 700 "$work"
+          argocd_server_crt_args=()
+          if [[ -s "$RUNNER_TEMP/monikey-argocd-server-trust.pem" ]]; then
+            argocd_server_crt_args=(--server-crt "$RUNNER_TEMP/monikey-argocd-server-trust.pem")
+          fi
 
           run_argocd_read() {
             local stdout_file="$1" stderr_file="$2" status
             shift 2
-            if timeout 30s argocd "$@" > "$stdout_file" 2> "$stderr_file"; then
+            if timeout 30s argocd "${argocd_server_crt_args[@]}" "$@" \
+                > "$stdout_file" 2> "$stderr_file"; then
               return 0
             else
               status=$?
@@ -199,6 +214,7 @@ jobs:
           ARGOCD_SERVER: ${{ secrets.ARGOCD_SERVER }}
           ARGOCD_AUTH_TOKEN: ${{ secrets.ARGOCD_AUTH_TOKEN }}
           SECRET_WRITER_TOKEN: ${{ secrets.MONIKEY_ENVIRONMENT_SECRET_WRITER_TOKEN }}
+          ARGOCD_SERVER_CRT_FILE: ${{ runner.temp }}/monikey-argocd-server-trust.pem
         shell: bash
         run: |
           set -euo pipefail
@@ -208,6 +224,10 @@ jobs:
           role_created=false
           candidate_created=false
           stored=false
+          argocd_server_crt_args=()
+          if [[ -s "$ARGOCD_SERVER_CRT_FILE" ]]; then
+            argocd_server_crt_args=(--server-crt "$ARGOCD_SERVER_CRT_FILE")
+          fi
           cleanup() {
             result=$?
             if [[ "$result" -ne 0 && "$candidate_created" == true && "$stored" == false ]]; then
@@ -234,13 +254,13 @@ jobs:
           }
 
           if [[ "$ROLE_PLAN" == create ]]; then
-            if ! argocd proj role create default monikey-inspection-reader --grpc-web \
+            if ! argocd "${argocd_server_crt_args[@]}" proj role create default monikey-inspection-reader --grpc-web \
                 > "$work/create-role.log" 2> "$work/argocd-error.log"; then
               echo '::error::Argo CD denied role creation or the request failed; no credential escalation was attempted.'
               exit 1
             fi
             role_created=true
-            if ! argocd proj role add-policy default monikey-inspection-reader \
+            if ! argocd "${argocd_server_crt_args[@]}" proj role add-policy default monikey-inspection-reader \
                 --action get --permission allow --object monikey-inspection-access --grpc-web \
                 > "$work/add-policy.log" 2> "$work/argocd-error.log"; then
               echo '::error::Could not attach the single approved get policy; the role will be preserved for owner review.'
@@ -248,7 +268,7 @@ jobs:
             fi
           fi
 
-          if ! argocd proj get default --grpc-web --output json \
+          if ! argocd "${argocd_server_crt_args[@]}" proj get default --grpc-web --output json \
               > "$work/project-after-write.json" 2> "$work/argocd-error.log"; then
             echo '::error::Could not verify the default AppProject role after preparation.'
             exit 1
@@ -263,7 +283,7 @@ jobs:
             exit 1
           }
 
-          if ! argocd proj role create-token default monikey-inspection-reader \
+          if ! argocd "${argocd_server_crt_args[@]}" proj role create-token default monikey-inspection-reader \
               --expires-in 1h --grpc-web > "$work/token-response.txt" 2> "$work/argocd-error.log"; then
             echo '::error::Could not mint the fixed one-hour project-role token.'
             exit 1
@@ -299,3 +319,5 @@ jobs:
         run: |
           work="$RUNNER_TEMP/monikey-argocd-token-bootstrap"
           [[ ! -d "$work" ]] || rm -rf "$work"
+          trust_cert="$RUNNER_TEMP/monikey-argocd-server-trust.pem"
+          [[ ! -f "$trust_cert" ]] || rm -f "$trust_cert"

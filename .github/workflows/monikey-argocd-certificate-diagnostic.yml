@@ -1,0 +1,54 @@
+name: MoniKey Argo CD TLS certificate diagnostic
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_certificate_diagnostic:
+        description: Confirm a read-only TLS certificate metadata inspection
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: monikey-argocd-certificate-diagnostic
+  cancel-in-progress: false
+
+jobs:
+  inspect:
+    name: Inspect Argo CD TLS certificate metadata
+    if: github.ref == 'refs/heads/main' && inputs.confirm_certificate_diagnostic
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment:
+      name: monikey-inspection-provisioning
+    env:
+      ARGOCD_SERVER: ${{ secrets.ARGOCD_SERVER }}
+    steps:
+      - name: Checkout reviewed certificate inspector
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Require fixed inspection target
+        shell: bash
+        run: |
+          set -euo pipefail
+          : "${ARGOCD_SERVER:?Configure the existing fixed Argo CD server secret}"
+          command -v openssl >/dev/null
+
+      - name: Connect to Tailscale
+        uses: tailscale/github-action@v2
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
+          args: --accept-routes
+
+      - name: Inspect presented certificate chain without exposing endpoint identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/monikey-schema-inspect/inspect_argocd_certificate.py

@@ -97,7 +97,7 @@ class ReadonlyTokenBootstrapTests(unittest.TestCase):
         self.assertIn("ARGOCD_AUTH_TOKEN: ${{ secrets.ARGOCD_AUTH_TOKEN }}", workflow)
         self.assertIn("SECRET_WRITER_TOKEN: ${{ secrets.MONIKEY_ENVIRONMENT_SECRET_WRITER_TOKEN }}", workflow)
         self.assertIn("account can-i update projects default", workflow)
-        self.assertIn("argocd proj get default --grpc-web --output json", workflow)
+        self.assertIn("proj get default --grpc-web --output json", workflow)
         self.assertIn("--action get --permission allow --object monikey-inspection-access", workflow)
         self.assertIn("--expires-in 1h", workflow)
         self.assertIn("verify_argocd_permissions.py", workflow)
@@ -136,7 +136,7 @@ class ReadonlyTokenBootstrapTests(unittest.TestCase):
         preflight = workflow.split("      - name: Inspect current authority", 1)[1].split(
             "  - name: Create only the fixed role", 1
         )[0]
-        write_index = workflow.index("argocd proj role create default")
+        write_index = workflow.index("proj role create default")
         self.assertLess(workflow.index("account can-i update projects default"), write_index)
         self.assertLess(workflow.index('run_argocd_read "$work/default-project.json"'), write_index)
         mint = workflow.split("      - name: Create only the fixed role", 1)[1]

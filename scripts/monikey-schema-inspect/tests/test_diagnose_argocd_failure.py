@@ -74,7 +74,7 @@ class ArgoFailureDiagnosticTests(unittest.TestCase):
         )
         script = step["run"]
         self.assertIn("run_argocd_read()", script)
-        self.assertIn("timeout 30s argocd \"$@\" >", script)
+        self.assertIn('timeout 30s argocd "${argocd_server_crt_args[@]}" "$@"', script)
         self.assertIn("account get-user-info --grpc-web --output json", script)
         self.assertIn("diagnose_argocd_failure.py", script)
         self.assertIn('"$stderr_file" "$stdout_file" "$status"', script)

@@ -42,7 +42,10 @@ class FakeRunner:
         self.calls.append((command, kwargs))
         if command == self.failing_command:
             return subprocess.CompletedProcess(command, 1, stdout="", stderr="fictional failure")
-        if command[:4] == ["argocd", "proj", "get", "default"]:
+        args = command[1:]
+        if args[:1] == ["--server-crt"]:
+            args = args[2:]
+        if args[:3] == ["proj", "get", "default"]:
             return subprocess.CompletedProcess(command, 0, stdout=json.dumps(self.document), stderr="")
         return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
 
@@ -52,10 +55,10 @@ class CandidateTokenCleanupTests(unittest.TestCase):
         self.assertEqual(len(runner.calls), 2)
         get_command, get_kwargs = runner.calls[0]
         delete_command, delete_kwargs = runner.calls[1]
-        self.assertEqual(get_command[:4], ["argocd", "proj", "get", "default"])
+        self.assertEqual(get_command, ["argocd", "proj", "get", "default", "--grpc-web", "--output", "json"])
         self.assertEqual(delete_command, [
-            "argocd", "proj", "role", "delete-token", "default",
-            "monikey-inspection-reader", str(METADATA["iat"]), "--grpc-web",
+            "argocd", "proj", "role", "delete-token", "default", "monikey-inspection-reader",
+            str(METADATA["iat"]), "--grpc-web",
         ])
         for _, kwargs in runner.calls:
             self.assertEqual(kwargs["env"]["ARGOCD_AUTH_TOKEN"], ADMIN_TOKEN)
@@ -108,6 +111,18 @@ class CandidateTokenCleanupTests(unittest.TestCase):
         self.assertFalse(any("proj role delete default" in command for command in joined))
         self.assertTrue(any("proj role delete-token default monikey-inspection-reader" in command
                             for command in joined))
+
+    def test_cleanup_uses_optional_server_crt_without_printing_or_mutating_other_state(self):
+        with tempfile.TemporaryDirectory() as directory:
+            certificate = Path(directory) / "trust.pem"
+            certificate.write_text("fictional PEM fixture", encoding="utf-8")
+            runner = FakeRunner()
+            self.assertTrue(module.revoke_candidate(METADATA, runner=runner, environ={
+                "ARGOCD_AUTH_TOKEN": ADMIN_TOKEN,
+                "ARGOCD_SERVER_CRT_FILE": str(certificate),
+            }))
+        self.assertTrue(all(command[1:3] == ["--server-crt", str(certificate)]
+                            for command, _ in runner.calls))
 
     def test_workflow_exit_cleanup_keeps_admin_auth_on_verification_and_storage_failures(self):
         repository = ROOT.parents[1]
