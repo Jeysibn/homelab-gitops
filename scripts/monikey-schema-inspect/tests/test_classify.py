@@ -89,6 +89,7 @@ def complete_inventory():
     inventory = {"database": "monikey_dev", "server_version": "17.6", "relation_kinds": {}, "role_security": {
         "superuser": False, "create_database": False, "create_role": False, "replication": False,
         "inherit": False, "schema_create": False, "database_create": False, "database_temp": False,
+        "database_temp_direct": False,
         "owns_database": False, "owns_schema": False,
         "has_role_memberships": False, "owns_target_objects": False, "sequence_privileges": False,
         "table_privileges": {name: {privilege: False for privilege in
@@ -150,6 +151,63 @@ class ClassificationTests(unittest.TestCase):
         document = (ROOT.parents[1] / "docs/MoniKey-Schema-Inspection.md").read_text().lower()
         self.assertIn("not independent review", document)
         self.assertIn("separate explicit approval", document)
+
+    def test_public_temp_privilege_is_tolerated_but_direct_temp_is_not(self):
+        inventory = complete_inventory()
+        role = inventory["role_security"]
+        role["database_temp"] = True
+        self.assertEqual(classify_module.role_is_read_only(inventory), (True, []))
+        role["database_temp_direct"] = True
+        safe, problems = classify_module.role_is_read_only(inventory)
+        self.assertFalse(safe)
+        self.assertIn("database_temp_direct", problems)
+
+    def test_inspection_access_rbac_is_fixed_and_namespace_scoped(self):
+        app = (ROOT.parents[1] / "kubernetes/applications/monikey-inspection-access.yaml").read_text()
+        access = (ROOT.parents[1] / "kubernetes/platform/monikey/inspection-access/manifests/access.yaml").read_text()
+        self.assertIn("path: kubernetes/platform/monikey/inspection-access/manifests", app)
+        self.assertNotIn("automated:", app)
+        self.assertIn('namespace: monikey', access)
+        self.assertIn('resourceNames: ["postgres-0"]', access)
+        self.assertIn('resources: ["pods/portforward"]', access)
+        self.assertIn('resources: ["serviceaccounts/token"]', access)
+        self.assertIn('resourceNames: ["monikey-schema-inspector"]', access)
+        for forbidden in ('"pods/exec"', '"secrets"', 'kind: ClusterRole', 'kind: ClusterRoleBinding'):
+            self.assertNotIn(forbidden, access)
+
+    def test_role_provisioning_has_no_database_wide_acl_changes(self):
+        sql = (ROOT / "provision_role.sql").read_text().lower()
+        self.assertIn("create role monikey_schema_inspector", sql)
+        self.assertIn("grant connect on database monikey_dev", sql)
+        self.assertIn("current_database() <> 'monikey_dev'", sql)
+        self.assertIn("rolname = current_user and rolsuper", sql)
+        self.assertNotRegex(sql, r"(?im)^\s*(revoke|grant)\s+(temp|temporary|all)")
+        self.assertNotIn("grant select", sql)
+
+    def test_provisioning_workflow_is_manual_confirmed_and_fail_closed(self):
+        workflow = (ROOT.parents[1] / ".github/workflows/monikey-inspection-credentials.yml").read_text()
+        self.assertIn("workflow_dispatch:", workflow)
+        self.assertIn("default: false", workflow)
+        self.assertIn("github.ref == 'refs/heads/main' && inputs.confirm_inspector_provisioning", workflow)
+        self.assertNotRegex(workflow, r"(?m)^\s*(push|pull_request|schedule|workflow_run):")
+        self.assertIn("monikey-inspection-provisioning", workflow)
+        self.assertIn("MONIKEY_SCHEMA_INSPECTION_DB_PASSWORD", workflow)
+        self.assertIn("MONIKEY_SCHEMA_INSPECTION_KUBECONFIG_B64", workflow)
+        self.assertIn("MONIKEY_ENVIRONMENT_SECRET_WRITER_TOKEN", workflow)
+        self.assertIn("--duration=1h", workflow)
+        preflight = workflow.split("  environment-preflight:", 1)[1].split("\n  provision:", 1)[0]
+        self.assertLess(
+            preflight.index("uses: actions/checkout@v4"),
+            preflight.index("python3 scripts/monikey-schema-inspect/validate_environment.py"),
+        )
+        self.assertIn("persist-credentials: false", preflight)
+        bootstrap_json = workflow.index('> "$RUNNER_TEMP/kube/bootstrap.json"')
+        restrict_mode = workflow.index('chmod 600 "$RUNNER_TEMP/kube/bootstrap.json"')
+        validate_bootstrap = workflow.index('python3 - "$RUNNER_TEMP/kube/bootstrap.json"')
+        self.assertLess(bootstrap_json, restrict_mode)
+        self.assertLess(restrict_mode, validate_bootstrap)
+        self.assertNotIn("kubectl apply", workflow)
+        self.assertNotIn("argocd app sync", workflow)
 
     def test_all_reviewed_signatures_are_applied(self):
         inventory = complete_inventory()

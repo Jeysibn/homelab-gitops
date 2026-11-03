@@ -316,7 +316,7 @@ def role_is_read_only(inventory: dict) -> tuple[bool, list[str]]:
         return False, ["role privilege metadata unavailable"]
     problems = []
     for key in ("superuser", "create_database", "create_role", "replication", "inherit",
-                "schema_create", "database_create", "database_temp", "owns_database", "owns_schema", "has_role_memberships",
+                "schema_create", "database_create", "database_temp_direct", "owns_database", "owns_schema", "has_role_memberships",
                 "owns_target_objects", "sequence_privileges"):
         if role.get(key) is not False:
             problems.append(key)

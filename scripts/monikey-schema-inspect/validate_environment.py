@@ -11,9 +11,14 @@ from pathlib import Path
 ENVIRONMENT_NAME = "monikey-production-inspection"
 
 
-def validate(environment: dict, branch_policy: dict, repository_owner: str) -> list[str]:
+def validate(
+    environment: dict,
+    branch_policy: dict,
+    repository_owner: str,
+    environment_name: str = ENVIRONMENT_NAME,
+) -> list[str]:
     problems = []
-    if environment.get("name") != ENVIRONMENT_NAME:
+    if environment.get("name") != environment_name:
         problems.append("expected protected Environment is missing")
 
     owner = repository_owner.casefold()
@@ -44,6 +49,7 @@ def main() -> int:
     parser.add_argument("environment", type=Path)
     parser.add_argument("branch_policy", type=Path)
     parser.add_argument("repository_owner")
+    parser.add_argument("--environment-name", default=ENVIRONMENT_NAME)
     args = parser.parse_args()
     try:
         environment = json.loads(args.environment.read_text(encoding="utf-8"))
@@ -51,7 +57,9 @@ def main() -> int:
     except (OSError, json.JSONDecodeError):
         print("::error::Environment protection metadata is unavailable or invalid.")
         return 1
-    problems = validate(environment, branch_policy, args.repository_owner)
+    problems = validate(
+        environment, branch_policy, args.repository_owner, args.environment_name
+    )
     if problems:
         for problem in problems:
             print(f"::error::{problem}")

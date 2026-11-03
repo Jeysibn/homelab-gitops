@@ -1,0 +1,21 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: monikey-inspection-access
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "4"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/jeysibn/homelab-gitops.git
+    targetRevision: main
+    path: kubernetes/platform/monikey/inspection-access/manifests
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: monikey
+  syncPolicy: {}
+  # Deliberately no automated sync. The root app may register this Application,
+  # but its RBAC resources require a separate, explicit Argo CD sync.

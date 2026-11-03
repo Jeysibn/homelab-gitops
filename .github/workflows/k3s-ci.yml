@@ -49,8 +49,8 @@ jobs:
         run: |
           shopt -s nullglob
           files=(kubernetes/applications/*.yaml)
-          [[ ${#files[@]} -eq 13 ]] || {
-            echo "Expected 13 explicit child Applications, found ${#files[@]}" >&2
+          [[ ${#files[@]} -eq 14 ]] || {
+            echo "Expected 14 explicit child Applications, found ${#files[@]}" >&2
             exit 1
           }
 
@@ -65,10 +65,18 @@ jobs:
             grep -Fxq '  destination:' "$file"
             grep -Fxq '    server: https://kubernetes.default.svc' "$file"
             grep -Eq '^    namespace: [a-z0-9-]+$' "$file"
-            grep -Fxq '  syncPolicy:' "$file"
-            grep -Fxq '    automated:' "$file"
-            grep -Fxq '      prune: true' "$file"
-            grep -Fxq '      selfHeal: true' "$file"
+            if [[ "$name" == monikey-inspection-access ]]; then
+              grep -Fxq '  syncPolicy: {}' "$file"
+              if grep -Fq 'automated:' "$file"; then
+                echo "$file: inspection access Application must remain manual-sync only" >&2
+                exit 1
+              fi
+            else
+              grep -Fxq '  syncPolicy:' "$file"
+              grep -Fxq '    automated:' "$file"
+              grep -Fxq '      prune: true' "$file"
+              grep -Fxq '      selfHeal: true' "$file"
+            fi
             grep -Fq 'resources-finalizer.argocd.argoproj.io' "$file"
             grep -Eq '^    argocd.argoproj.io/sync-wave: "[0-9]+"$' "$file"
 
