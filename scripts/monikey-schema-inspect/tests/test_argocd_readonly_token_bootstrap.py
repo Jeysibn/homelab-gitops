@@ -82,6 +82,13 @@ class ReadonlyTokenBootstrapTests(unittest.TestCase):
         self.assertNotIn("argocd app sync", workflow)
         self.assertNotIn("kubectl", workflow)
         self.assertNotIn("upload-artifact", workflow)
+        bootstrap_job = workflow.split("  bootstrap:", 1)[1]
+        job_environment = bootstrap_job.split("    steps:", 1)[0]
+        self.assertNotIn("ARGOCD_AUTH_TOKEN:", job_environment)
+        self.assertNotIn("SECRET_WRITER_TOKEN:", job_environment)
+        mint_step = bootstrap_job.split("      - name: Create only the fixed role", 1)[1]
+        self.assertIn("ARGOCD_AUTH_TOKEN: ${{ secrets.ARGOCD_AUTH_TOKEN }}", mint_step)
+        self.assertIn("SECRET_WRITER_TOKEN: ${{ secrets.MONIKEY_ENVIRONMENT_SECRET_WRITER_TOKEN }}", mint_step)
 
         preflight = workflow.split("      - name: Inspect current authority", 1)[1].split(
             "  - name: Create only the fixed role", 1

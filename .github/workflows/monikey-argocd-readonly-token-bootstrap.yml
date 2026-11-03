@@ -79,11 +79,6 @@ jobs:
     environment:
       name: monikey-inspection-provisioning
     env:
-      ARGOCD_SERVER: ${{ secrets.ARGOCD_SERVER }}
-      ARGOCD_AUTH_TOKEN: ${{ secrets.ARGOCD_AUTH_TOKEN }}
-      SECRET_WRITER_TOKEN: ${{ secrets.MONIKEY_ENVIRONMENT_SECRET_WRITER_TOKEN }}
-      TS_OAUTH_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
-      TS_OAUTH_SECRET: ${{ secrets.TS_OAUTH_SECRET }}
       ARGOCD_VERSION: v3.5.1
     steps:
       - name: Checkout reviewed bootstrap scripts
@@ -92,6 +87,11 @@ jobs:
           persist-credentials: false
 
       - name: Require fixed credentials and target
+        env:
+          ARGOCD_SERVER: ${{ secrets.ARGOCD_SERVER }}
+          SECRET_WRITER_TOKEN: ${{ secrets.MONIKEY_ENVIRONMENT_SECRET_WRITER_TOKEN }}
+          TS_OAUTH_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          TS_OAUTH_SECRET: ${{ secrets.TS_OAUTH_SECRET }}
         shell: bash
         run: |
           set -euo pipefail
@@ -128,6 +128,9 @@ jobs:
 
       - name: Inspect current authority and default AppProject before writes
         id: preflight
+        env:
+          ARGOCD_SERVER: ${{ secrets.ARGOCD_SERVER }}
+          ARGOCD_AUTH_TOKEN: ${{ secrets.ARGOCD_AUTH_TOKEN }}
         shell: bash
         run: |
           set -euo pipefail
@@ -179,6 +182,9 @@ jobs:
         id: mint
         env:
           ROLE_PLAN: ${{ steps.preflight.outputs.role-plan }}
+          ARGOCD_SERVER: ${{ secrets.ARGOCD_SERVER }}
+          ARGOCD_AUTH_TOKEN: ${{ secrets.ARGOCD_AUTH_TOKEN }}
+          SECRET_WRITER_TOKEN: ${{ secrets.MONIKEY_ENVIRONMENT_SECRET_WRITER_TOKEN }}
         shell: bash
         run: |
           set -euo pipefail
