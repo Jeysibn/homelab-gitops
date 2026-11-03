@@ -1,0 +1,154 @@
+name: Configure MoniKey inspection target variables
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_target_variable_setup:
+        description: Confirm extracting the approved target from the existing backup kubeconfig
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: monikey-inspection-target-variables
+  cancel-in-progress: false
+
+jobs:
+  environment-preflight:
+    name: Verify protected provisioning Environment
+    if: github.ref == 'refs/heads/main' && inputs.confirm_target_variable_setup
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    outputs:
+      protected: ${{ steps.environment.outputs.protected }}
+    steps:
+      - name: Checkout reviewed Environment validator
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Verify owner approval and main-only Environment
+        id: environment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          REPOSITORY_OWNER: ${{ github.repository_owner }}
+          ENVIRONMENT_NAME: monikey-inspection-provisioning
+        shell: bash
+        run: |
+          set -euo pipefail
+          response="$RUNNER_TEMP/environment.json"
+          policies="$RUNNER_TEMP/environment-branches.json"
+          trap 'rm -f "$response" "$policies"' EXIT
+          status="$(curl --silent --show-error --connect-timeout 5 --max-time 15 \
+            --output "$response" --write-out '%{http_code}' \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            --header 'Accept: application/vnd.github+json' \
+            --header 'X-GitHub-Api-Version: 2022-11-28' \
+            "$GITHUB_API_URL/repos/$REPOSITORY/environments/$ENVIRONMENT_NAME")"
+          [[ "$status" == 200 ]] || {
+            echo '::error::Protected provisioning Environment is missing or not readable.'
+            exit 1
+          }
+          policy_status="$(curl --silent --show-error --connect-timeout 5 --max-time 15 \
+            --output "$policies" --write-out '%{http_code}' \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            --header 'Accept: application/vnd.github+json' \
+            --header 'X-GitHub-Api-Version: 2022-11-28' \
+            "$GITHUB_API_URL/repos/$REPOSITORY/environments/$ENVIRONMENT_NAME/deployment-branch-policies")"
+          [[ "$policy_status" == 200 ]] || {
+            echo '::error::Provisioning Environment main-only branch policy is missing or not readable.'
+            exit 1
+          }
+          python3 scripts/monikey-schema-inspect/validate_environment.py \
+            "$response" "$policies" "$REPOSITORY_OWNER" \
+            --environment-name "$ENVIRONMENT_NAME"
+          echo 'protected=true' >> "$GITHUB_OUTPUT"
+
+  configure-target-variables:
+    name: Add only missing inspection target variables
+    needs: environment-preflight
+    if: needs.environment-preflight.outputs.protected == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    environment:
+      name: monikey-inspection-provisioning
+    env:
+      BACKUP_KUBECONFIG_B64: ${{ secrets.MONIKEY_BACKUP_KUBECONFIG_B64 }}
+      GH_TOKEN: ${{ secrets.MONIKEY_ENVIRONMENT_SECRET_WRITER_TOKEN }}
+    steps:
+      - name: Checkout target validator
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install pinned kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: v1.36.0
+
+      - name: Extract, create missing values, and verify both Environments
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          : "${BACKUP_KUBECONFIG_B64:?Configure the existing repository backup kubeconfig secret}"
+          : "${GH_TOKEN:?Configure the protected Environment secret-writer token}"
+          work="$RUNNER_TEMP/monikey-target-vars"
+          install -d -m 700 "$work"
+          trap 'python3 -c "from pathlib import Path; import sys; p=Path(sys.argv[1]); [x.unlink() for x in p.iterdir() if x.is_file()]; p.rmdir()" "$work"' EXIT
+
+          printf '%s' "$BACKUP_KUBECONFIG_B64" | base64 --decode > "$work/backup-kubeconfig"
+          chmod 600 "$work/backup-kubeconfig"
+          unset BACKUP_KUBECONFIG_B64
+          if ! KUBECONFIG="$work/backup-kubeconfig" kubectl config view \
+              --raw --flatten --minify -o json > "$work/selected-kubeconfig.json" 2> "$work/kubectl-error.log"; then
+            echo '::error::Could not safely read the selected context from the backup kubeconfig.'
+            exit 1
+          fi
+          chmod 600 "$work/selected-kubeconfig.json"
+          [[ -s "$work/selected-kubeconfig.json" ]] || {
+            echo '::error::The selected kubeconfig is empty.'
+            exit 1
+          }
+
+          gh api --paginate \
+            "repos/$GITHUB_REPOSITORY/environments/monikey-inspection-provisioning/variables?per_page=100" \
+            > "$work/provisioning-before.json"
+          gh api --paginate \
+            "repos/$GITHUB_REPOSITORY/environments/monikey-production-inspection/variables?per_page=100" \
+            > "$work/production-before.json"
+          python3 scripts/monikey-schema-inspect/prepare_environment_variables.py prepare \
+            "$work/selected-kubeconfig.json" "$work/provisioning-before.json" \
+            "$work/production-before.json" "$work/plan.json"
+
+          python3 scripts/monikey-schema-inspect/prepare_environment_variables.py writes "$work/plan.json" \
+            > "$work/writes.tsv"
+          while IFS=$'\t' read -r environment variable; do
+            [[ -n "$environment" && -n "$variable" ]] || continue
+            case "$environment:$variable" in
+              monikey-inspection-provisioning:MONIKEY_SCHEMA_EXPECTED_CONTEXT|\
+              monikey-inspection-provisioning:MONIKEY_SCHEMA_EXPECTED_API_SERVER|\
+              monikey-production-inspection:MONIKEY_SCHEMA_EXPECTED_CONTEXT|\
+              monikey-production-inspection:MONIKEY_SCHEMA_EXPECTED_API_SERVER) ;;
+              *) echo '::error::Unexpected target variable in the prepared plan.'; exit 1 ;;
+            esac
+            python3 scripts/monikey-schema-inspect/prepare_environment_variables.py payload \
+              "$work/plan.json" "$environment" "$variable" \
+              | gh api --method POST \
+                  "repos/$GITHUB_REPOSITORY/environments/$environment/variables" \
+                  --input - > "$work/create-response.json"
+          done < "$work/writes.tsv"
+
+          gh api --paginate \
+            "repos/$GITHUB_REPOSITORY/environments/monikey-inspection-provisioning/variables?per_page=100" \
+            > "$work/provisioning-after.json"
+          gh api --paginate \
+            "repos/$GITHUB_REPOSITORY/environments/monikey-production-inspection/variables?per_page=100" \
+            > "$work/production-after.json"
+          python3 scripts/monikey-schema-inspect/prepare_environment_variables.py verify \
+            "$work/plan.json" "$work/provisioning-after.json" "$work/production-after.json"
