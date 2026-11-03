@@ -18,6 +18,7 @@ EXPECTED_POLICY = (
     f"p, {SUBJECT}, applications, get, {PROJECT}/monikey-inspection-access, allow"
 )
 TOKEN_PATTERN = re.compile(r"(?m)^\s*Token:\s*(\S+)\s*$")
+TOKEN_ID_PATTERN = re.compile(r"(?m)^\s*ID:\s*(\S+)\s*$")
 
 
 def role_plan(document: object) -> str:
@@ -53,11 +54,12 @@ def require_role_ready(document: object) -> str:
     return result
 
 
-def extract_token(output: str) -> str:
+def token_details(output: str) -> tuple[str, dict[str, int | str]]:
     matches = TOKEN_PATTERN.findall(output)
-    if len(matches) != 1:
-        raise ValueError("Argo CD did not return exactly one token")
-    token = matches[0]
+    ids = TOKEN_ID_PATTERN.findall(output)
+    if len(matches) != 1 or len(ids) != 1:
+        raise ValueError("Argo CD did not return exactly one token and token identifier")
+    token, token_id = matches[0], ids[0]
     if token.count(".") != 2 or len(token) < 40:
         raise ValueError("Argo CD token response is malformed")
     try:
@@ -68,7 +70,11 @@ def extract_token(output: str) -> str:
     if (not isinstance(claims, dict) or not isinstance(claims.get("iat"), int)
             or not isinstance(claims.get("exp"), int) or claims["exp"] - claims["iat"] != 3600):
         raise ValueError("Argo CD token lifetime is not exactly one hour")
-    return token
+    return token, {"id": token_id, "iat": claims["iat"]}
+
+
+def extract_token(output: str) -> str:
+    return token_details(output)[0]
 
 
 def write_private(path: Path, content: str) -> None:
@@ -91,6 +97,7 @@ def main() -> int:
     token_parser = subparsers.add_parser("extract-token")
     token_parser.add_argument("response_file", type=Path)
     token_parser.add_argument("token_file", type=Path)
+    token_parser.add_argument("metadata_file", type=Path)
     args = parser.parse_args()
 
     try:
@@ -99,8 +106,9 @@ def main() -> int:
         elif args.command == "role-ready":
             print(require_role_ready(json.loads(args.project_json.read_text(encoding="utf-8"))))
         else:
-            token = extract_token(args.response_file.read_text(encoding="utf-8"))
+            token, metadata = token_details(args.response_file.read_text(encoding="utf-8"))
             write_private(args.token_file, token)
+            write_private(args.metadata_file, json.dumps(metadata, sort_keys=True))
     except (OSError, json.JSONDecodeError, ValueError) as error:
         print(f"::error::{error}")
         return 1

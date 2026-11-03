@@ -193,14 +193,22 @@ jobs:
           work="$RUNNER_TEMP/monikey-argocd-token-bootstrap"
           install -d -m 700 "$work"
           role_created=false
+          candidate_created=false
           stored=false
           cleanup() {
             result=$?
-            if [[ "$result" -ne 0 && "$stored" == false && "$role_created" == true ]]; then
-              if ! argocd proj role delete default monikey-inspection-reader --grpc-web \
-                  > /dev/null 2> "$work/cleanup-error.log"; then
-                echo '::error::Failed to remove the newly created empty/invalid project role; owner review is required.'
+            if [[ "$result" -ne 0 && "$candidate_created" == true && "$stored" == false ]]; then
+              if [[ -s "$work/candidate-metadata.json" ]]; then
+                if ! python3 scripts/monikey-schema-inspect/cleanup_argocd_candidate.py \
+                    "$work/candidate-metadata.json" > "$work/revoke.log" 2> "$work/revoke-error.log"; then
+                  echo '::warning::Candidate token could not be uniquely revoked; it may remain valid until its one-hour expiration. Owner review is required.'
+                fi
+              else
+                echo '::warning::Candidate token metadata is unavailable for safe revocation; it may remain valid until its one-hour expiration. Owner review is required.'
               fi
+            fi
+            if [[ "$result" -ne 0 && "$role_created" == true && "$stored" == false ]]; then
+              echo '::warning::The project role created by this run was preserved; owner review is required.'
             fi
             rm -rf "$work"
             return "$result"
@@ -222,7 +230,7 @@ jobs:
             if ! argocd proj role add-policy default monikey-inspection-reader \
                 --action get --permission allow --object monikey-inspection-access --grpc-web \
                 > "$work/add-policy.log" 2> "$work/argocd-error.log"; then
-              echo '::error::Could not attach the single approved get policy; cleanup will remove the new role.'
+              echo '::error::Could not attach the single approved get policy; the role will be preserved for owner review.'
               exit 1
             fi
           fi
@@ -247,20 +255,20 @@ jobs:
             echo '::error::Could not mint the fixed one-hour project-role token.'
             exit 1
           fi
+          candidate_created=true
           chmod 600 "$work/token-response.txt"
           python3 scripts/monikey-schema-inspect/prepare_argocd_readonly_token.py \
-            extract-token "$work/token-response.txt" "$work/candidate-token"
-          chmod 600 "$work/candidate-token"
+            extract-token "$work/token-response.txt" "$work/candidate-token" "$work/candidate-metadata.json"
+          chmod 600 "$work/candidate-token" "$work/candidate-metadata.json"
           candidate="$(<"$work/candidate-token")"
           echo "::add-mask::$candidate"
           unset candidate
-          export ARGOCD_AUTH_TOKEN="$(<"$work/candidate-token")"
-          if ! python3 scripts/monikey-schema-inspect/verify_argocd_permissions.py \
+          if ! ARGOCD_AUTH_TOKEN="$(<"$work/candidate-token")" \
+              python3 scripts/monikey-schema-inspect/verify_argocd_permissions.py \
               > "$work/permission-check.log" 2> "$work/permission-check-error.log"; then
             echo '::error::Candidate token failed effective read-only identity/permission checks; it will not be stored.'
             exit 1
           fi
-          unset ARGOCD_AUTH_TOKEN
 
           if ! printf '%s' "$(<"$work/candidate-token")" | \
               GH_TOKEN="$SECRET_WRITER_TOKEN" gh secret set ARGOCD_READONLY_AUTH_TOKEN \

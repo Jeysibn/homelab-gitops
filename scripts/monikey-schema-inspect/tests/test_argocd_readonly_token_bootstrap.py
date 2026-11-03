@@ -23,6 +23,10 @@ def fake_jwt(lifetime=3600):
     return f"{header}.{payload}.signature"
 
 
+def token_response(lifetime=3600, token_id="candidate-run-token"):
+    return f"Create token succeeded.\n  ID: {token_id}\n  Token: {fake_jwt(lifetime)}\n"
+
+
 def project(roles=None):
     return {"metadata": {"name": "default"}, "spec": {"roles": roles or []}}
 
@@ -67,9 +71,13 @@ class ReadonlyTokenBootstrapTests(unittest.TestCase):
 
     def test_token_extraction_requires_exactly_one_jwt_and_writes_private_file(self):
         token = fake_jwt()
-        self.assertEqual(module.extract_token(f"Create token succeeded.\nToken: {token}\n"), token)
-        for output in ("Token: short", "Token: a.b.c\nToken: d.e.f",
-                       f"Token: {fake_jwt(1800)}"):
+        output = token_response()
+        self.assertEqual(module.extract_token(output), token)
+        token_value, metadata = module.token_details(output)
+        self.assertEqual(token_value, token)
+        self.assertEqual(metadata, {"id": "candidate-run-token", "iat": 1000})
+        for output in ("Token: short", "ID: unique\nToken: a.b.c\nToken: d.e.f",
+                       f"ID: unique\nToken: {fake_jwt(1800)}"):
             with self.subTest(output=output), self.assertRaises(ValueError):
                 module.extract_token(output)
 
@@ -99,6 +107,13 @@ class ReadonlyTokenBootstrapTests(unittest.TestCase):
         self.assertNotIn("argocd app sync", workflow)
         self.assertNotIn("kubectl", workflow)
         self.assertNotIn("upload-artifact", workflow)
+        self.assertIn('candidate_created=true', workflow)
+        self.assertIn("cleanup_argocd_candidate.py", workflow)
+        self.assertIn("ARGOCD_AUTH_TOKEN=\"$(<\"$work/candidate-token\")\"", workflow)
+        self.assertNotIn('export ARGOCD_AUTH_TOKEN="$(<"$work/candidate-token")"', workflow)
+        self.assertNotIn("argocd proj role delete default monikey-inspection-reader", workflow)
+        self.assertIn('if [[ "$result" -ne 0 && "$role_created" == true && "$stored" == false ]]', workflow)
+        self.assertIn("The project role created by this run was preserved", workflow)
 
         credential_step = workflow.split("      - name: Require fixed credentials and target", 1)[1].split(
             "      - name: Connect to Tailscale", 1
@@ -128,7 +143,12 @@ class ReadonlyTokenBootstrapTests(unittest.TestCase):
         self.assertIn('role-ready "$work/project-after-write.json"', mint)
         self.assertIn('[[ "$role_plan_after" == reuse ]]', mint)
         self.assertLess(mint.index("verify_argocd_permissions.py"), mint.index("gh secret set"))
-        self.assertIn('if [[ "$result" -ne 0 && "$stored" == false && "$role_created" == true ]]', mint)
+        self.assertIn('if [[ "$result" -ne 0 && "$candidate_created" == true && "$stored" == false ]]', mint)
+        self.assertIn('if [[ "$result" -ne 0 && "$role_created" == true && "$stored" == false ]]', mint)
+        self.assertLess(mint.index('candidate_created=true'), mint.index('verify_argocd_permissions.py'))
+        self.assertLess(mint.index('trap cleanup EXIT'), mint.index('Candidate token failed'))
+        secret_failure = mint.index('Could not store the verified token')
+        self.assertLess(secret_failure, mint.index('stored=true'))
 
 
 if __name__ == "__main__":
