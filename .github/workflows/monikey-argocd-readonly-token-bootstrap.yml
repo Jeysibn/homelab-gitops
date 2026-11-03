@@ -1,0 +1,271 @@
+name: Bootstrap MoniKey read-only Argo CD token
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_readonly_token_bootstrap:
+        description: Confirm the fixed default-project read-only token bootstrap
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: monikey-argocd-readonly-token-bootstrap
+  cancel-in-progress: false
+
+jobs:
+  environment-preflight:
+    name: Verify protected provisioning Environment
+    if: github.ref == 'refs/heads/main' && inputs.confirm_readonly_token_bootstrap
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    outputs:
+      protected: ${{ steps.environment.outputs.protected }}
+    steps:
+      - name: Checkout reviewed Environment validator
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Require owner approval and main-only Environment policy
+        id: environment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          REPOSITORY_OWNER: ${{ github.repository_owner }}
+          ENVIRONMENT_NAME: monikey-inspection-provisioning
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          response="$RUNNER_TEMP/environment.json"
+          policies="$RUNNER_TEMP/environment-branches.json"
+          trap 'rm -f "$response" "$policies"' EXIT
+          status="$(curl --silent --show-error --connect-timeout 5 --max-time 15 \
+            --output "$response" --write-out '%{http_code}' \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            --header 'Accept: application/vnd.github+json' \
+            --header 'X-GitHub-Api-Version: 2022-11-28' \
+            "$GITHUB_API_URL/repos/$REPOSITORY/environments/$ENVIRONMENT_NAME")"
+          [[ "$status" == 200 ]] || {
+            echo '::error::Protected provisioning Environment is missing or unreadable.'
+            exit 1
+          }
+          policy_status="$(curl --silent --show-error --connect-timeout 5 --max-time 15 \
+            --output "$policies" --write-out '%{http_code}' \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            --header 'Accept: application/vnd.github+json' \
+            --header 'X-GitHub-Api-Version: 2022-11-28' \
+            "$GITHUB_API_URL/repos/$REPOSITORY/environments/$ENVIRONMENT_NAME/deployment-branch-policies")"
+          [[ "$policy_status" == 200 ]] || {
+            echo '::error::Provisioning Environment branch policy is missing or unreadable.'
+            exit 1
+          }
+          python3 scripts/monikey-schema-inspect/validate_environment.py \
+            "$response" "$policies" "$REPOSITORY_OWNER" \
+            --environment-name "$ENVIRONMENT_NAME"
+          echo 'protected=true' >> "$GITHUB_OUTPUT"
+
+  bootstrap:
+    name: Verify, provision, and store read-only project token
+    needs: environment-preflight
+    if: needs.environment-preflight.outputs.protected == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: monikey-inspection-provisioning
+    env:
+      ARGOCD_SERVER: ${{ secrets.ARGOCD_SERVER }}
+      ARGOCD_AUTH_TOKEN: ${{ secrets.ARGOCD_AUTH_TOKEN }}
+      SECRET_WRITER_TOKEN: ${{ secrets.MONIKEY_ENVIRONMENT_SECRET_WRITER_TOKEN }}
+      TS_OAUTH_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+      TS_OAUTH_SECRET: ${{ secrets.TS_OAUTH_SECRET }}
+      ARGOCD_VERSION: v3.5.1
+    steps:
+      - name: Checkout reviewed bootstrap scripts
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Require fixed credentials and target
+        shell: bash
+        run: |
+          set -euo pipefail
+          : "${ARGOCD_SERVER:?Configure the existing Argo CD server secret}"
+          : "${ARGOCD_AUTH_TOKEN:?Configure the existing Argo CD token; it is not assumed to have role-management permission}"
+          : "${SECRET_WRITER_TOKEN:?Configure the protected Environment secret-writer token}"
+          : "${TS_OAUTH_CLIENT_ID:?Configure Tailscale connectivity credentials}"
+          : "${TS_OAUTH_SECRET:?Configure Tailscale connectivity credentials}"
+          command -v gh >/dev/null
+
+      - name: Connect to Tailscale
+        uses: tailscale/github-action@v2
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
+          args: --accept-routes
+
+      - name: Install checksum-verified Argo CD CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_url="https://github.com/argoproj/argo-cd/releases/download/${ARGOCD_VERSION}"
+          cd "$RUNNER_TEMP"
+          curl --fail --silent --show-error --location --retry 3 \
+            "$release_url/argocd-linux-amd64" -o argocd-linux-amd64
+          curl --fail --silent --show-error --location --retry 3 \
+            "$release_url/cli_checksums.txt" -o cli_checksums.txt
+          awk '$2 == "argocd-linux-amd64" { print }' cli_checksums.txt > argocd.sha256
+          test -s argocd.sha256
+          sha256sum --check argocd.sha256
+          sudo install -m 0755 argocd-linux-amd64 /usr/local/bin/argocd
+          argocd version --client
+
+      - name: Inspect current authority and default AppProject before writes
+        id: preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          work="$RUNNER_TEMP/monikey-argocd-token-bootstrap"
+          install -d -m 700 "$work"
+          trap 'rm -rf "$work"' EXIT
+          chmod 700 "$work"
+
+          if ! timeout 30s argocd account get-user-info --grpc-web --output json \
+              > "$work/bootstrap-identity.json" 2> "$work/argocd-error.log"; then
+            echo '::error::Could not identify the existing Argo CD credential; stopped before writes.'
+            exit 1
+          fi
+          if ! timeout 30s argocd account can-i get projects default --grpc-web \
+              > "$work/can-get-project.txt" 2> "$work/argocd-error.log"; then
+            echo '::error::Could not determine whether the existing credential can read the default AppProject; stopped before writes.'
+            exit 1
+          fi
+          if [[ "$(<"$work/can-get-project.txt")" != yes ]]; then
+            echo '::error::Existing ARGOCD_AUTH_TOKEN cannot read the fixed default AppProject; stopped before writes.'
+            exit 1
+          fi
+          if ! timeout 30s argocd proj get default --grpc-web --output json \
+              > "$work/default-project.json" 2> "$work/argocd-error.log"; then
+            echo '::error::Could not inspect the live default AppProject; stopped before writes.'
+            exit 1
+          fi
+          python3 scripts/monikey-schema-inspect/prepare_argocd_readonly_token.py \
+            role-plan "$work/default-project.json" > "$work/role-plan.txt"
+          role_plan="$(<"$work/role-plan.txt")"
+          [[ "$role_plan" == create || "$role_plan" == reuse ]] || {
+            echo '::error::Default AppProject role state is unknown; stopped before writes.'
+            exit 1
+          }
+          if ! timeout 30s argocd account can-i update projects default --grpc-web \
+              > "$work/can-update-project.txt" 2> "$work/argocd-error.log"; then
+            echo '::error::Could not determine whether the existing credential can manage default project roles; stopped before writes.'
+            exit 1
+          fi
+          if [[ "$(<"$work/can-update-project.txt")" != yes ]]; then
+            echo '::error::Existing ARGOCD_AUTH_TOKEN cannot update the default AppProject to manage the required project role; no escalation was attempted.'
+            exit 1
+          fi
+          echo "role-plan=$role_plan" >> "$GITHUB_OUTPUT"
+          echo 'Read-only preflight passed; the fixed AppProject role can be safely prepared for effective-token validation.'
+
+      - name: Create only the fixed role and mint a one-hour candidate token
+        id: mint
+        env:
+          ROLE_PLAN: ${{ steps.preflight.outputs.role-plan }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          work="$RUNNER_TEMP/monikey-argocd-token-bootstrap"
+          install -d -m 700 "$work"
+          role_created=false
+          token_created=false
+          stored=false
+          cleanup() {
+            result=$?
+            if [[ "$result" -ne 0 && "$stored" == false && "$role_created" == true ]]; then
+              if ! argocd proj role delete default monikey-inspection-reader --grpc-web \
+                  > /dev/null 2> "$work/cleanup-error.log"; then
+                echo '::error::Failed to remove the newly created empty/invalid project role; owner review is required.'
+              fi
+            fi
+            rm -rf "$work"
+            return "$result"
+          }
+          trap cleanup EXIT
+          chmod 700 "$work"
+          [[ "$ROLE_PLAN" == create || "$ROLE_PLAN" == reuse ]] || {
+            echo '::error::Invalid role plan; no writes performed.'
+            exit 1
+          }
+
+          if [[ "$ROLE_PLAN" == create ]]; then
+            if ! argocd proj role create default monikey-inspection-reader --grpc-web \
+                > "$work/create-role.log" 2> "$work/argocd-error.log"; then
+              echo '::error::Argo CD denied role creation or the request failed; no credential escalation was attempted.'
+              exit 1
+            fi
+            role_created=true
+            if ! argocd proj role add-policy default monikey-inspection-reader \
+                --action get --permission allow --object monikey-inspection-access --grpc-web \
+                > "$work/add-policy.log" 2> "$work/argocd-error.log"; then
+              echo '::error::Could not attach the single approved get policy; cleanup will remove the new role.'
+              exit 1
+            fi
+          fi
+
+          if ! argocd proj get default --grpc-web --output json \
+              > "$work/project-after-write.json" 2> "$work/argocd-error.log"; then
+            echo '::error::Could not verify the default AppProject role after preparation.'
+            exit 1
+          fi
+          if ! python3 scripts/monikey-schema-inspect/prepare_argocd_readonly_token.py \
+              role-plan "$work/project-after-write.json" > /dev/null; then
+            echo '::error::The live project role is not exactly the approved role.'
+            exit 1
+          fi
+
+          if ! argocd proj role create-token default monikey-inspection-reader \
+              --expires-in 1h --grpc-web > "$work/token-response.txt" 2> "$work/argocd-error.log"; then
+            echo '::error::Could not mint the fixed one-hour project-role token.'
+            exit 1
+          fi
+          token_created=true
+          chmod 600 "$work/token-response.txt"
+          python3 scripts/monikey-schema-inspect/prepare_argocd_readonly_token.py \
+            extract-token "$work/token-response.txt" "$work/candidate-token"
+          chmod 600 "$work/candidate-token"
+          candidate="$(<"$work/candidate-token")"
+          echo "::add-mask::$candidate"
+          unset candidate
+          export ARGOCD_AUTH_TOKEN="$(<"$work/candidate-token")"
+          if ! python3 scripts/monikey-schema-inspect/verify_argocd_permissions.py \
+              > "$work/permission-check.log" 2> "$work/permission-check-error.log"; then
+            echo '::error::Candidate token failed effective read-only identity/permission checks; it will not be stored.'
+            exit 1
+          fi
+          unset ARGOCD_AUTH_TOKEN
+
+          if ! printf '%s' "$(<"$work/candidate-token")" | \
+              GH_TOKEN="$SECRET_WRITER_TOKEN" gh secret set ARGOCD_READONLY_AUTH_TOKEN \
+                --repo "$GITHUB_REPOSITORY" --env monikey-inspection-provisioning \
+                > "$work/secret-write.log" 2> "$work/secret-write-error.log"; then
+            echo '::error::Could not store the verified token in the protected provisioning Environment.'
+            exit 1
+          fi
+          stored=true
+          echo 'Verified one-hour read-only project token stored in the protected provisioning Environment.'
+
+      - name: Remove temporary token files
+        if: always()
+        shell: bash
+        run: |
+          work="$RUNNER_TEMP/monikey-argocd-token-bootstrap"
+          [[ ! -d "$work" ]] || rm -rf "$work"

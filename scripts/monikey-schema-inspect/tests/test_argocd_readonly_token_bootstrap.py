@@ -1,0 +1,98 @@
+import importlib.util
+import tempfile
+import unittest
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+spec = importlib.util.spec_from_file_location(
+    "prepare_argocd_readonly_token", ROOT / "prepare_argocd_readonly_token.py"
+)
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+REPO_ROOT = ROOT.parents[1]
+
+
+def project(roles=None):
+    return {"metadata": {"name": "default"}, "spec": {"roles": roles or []}}
+
+
+class ReadonlyTokenBootstrapTests(unittest.TestCase):
+    def test_missing_role_plans_fixed_creation(self):
+        self.assertEqual(module.role_plan(project()), "create")
+
+    def test_exact_role_is_reused_without_mutation(self):
+        role = {
+            "name": "monikey-inspection-reader",
+            "policies": [module.EXPECTED_POLICY],
+            "groups": [],
+        }
+        self.assertEqual(module.role_plan(project([role])), "reuse")
+
+    def test_existing_role_with_any_extra_policy_or_group_is_rejected(self):
+        cases = [
+            {"name": module.ROLE, "policies": [module.EXPECTED_POLICY, "p, extra"], "groups": []},
+            {"name": module.ROLE, "policies": [module.EXPECTED_POLICY], "groups": ["wide-group"]},
+            {"name": module.ROLE, "policies": [], "groups": []},
+        ]
+        for role in cases:
+            with self.subTest(role=role), self.assertRaises(ValueError):
+                module.role_plan(project([role]))
+
+    def test_unknown_or_duplicate_project_role_state_fails_closed(self):
+        for document in (
+            {},
+            {"metadata": {"name": "other"}, "spec": {"roles": []}},
+            project([{"name": module.ROLE}, {"name": module.ROLE}]),
+            {"metadata": {"name": "default"}, "spec": {"roles": "unknown"}},
+        ):
+            with self.subTest(document=document), self.assertRaises(ValueError):
+                module.role_plan(document)
+
+    def test_token_extraction_requires_exactly_one_jwt_and_writes_private_file(self):
+        token = "header.payload.signature" + ("x" * 40)
+        self.assertEqual(module.extract_token(f"Create token succeeded.\nToken: {token}\n"), token)
+        for output in ("Token: short", "Token: a.b.c\nToken: d.e.f"):
+            with self.subTest(output=output), self.assertRaises(ValueError):
+                module.extract_token(output)
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "private" / "token"
+            module.write_private(path, token)
+            self.assertEqual(path.read_text().strip(), token)
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+
+    def test_workflow_is_manual_approved_fixed_target_and_validates_before_storage(self):
+        workflow = (REPO_ROOT / ".github/workflows/monikey-argocd-readonly-token-bootstrap.yml").read_text()
+        self.assertIn("workflow_dispatch:", workflow)
+        self.assertIn("default: false", workflow)
+        self.assertIn("github.ref == 'refs/heads/main' && inputs.confirm_readonly_token_bootstrap", workflow)
+        self.assertNotRegex(workflow, r"(?m)^\s*(push|pull_request|schedule|workflow_run):")
+        self.assertIn("name: monikey-inspection-provisioning", workflow)
+        self.assertIn("ARGOCD_AUTH_TOKEN: ${{ secrets.ARGOCD_AUTH_TOKEN }}", workflow)
+        self.assertIn("SECRET_WRITER_TOKEN: ${{ secrets.MONIKEY_ENVIRONMENT_SECRET_WRITER_TOKEN }}", workflow)
+        self.assertIn("argocd account can-i update projects default", workflow)
+        self.assertIn("argocd proj get default --grpc-web --output json", workflow)
+        self.assertIn("--action get --permission allow --object monikey-inspection-access", workflow)
+        self.assertIn("--expires-in 1h", workflow)
+        self.assertIn("verify_argocd_permissions.py", workflow)
+        self.assertIn("gh secret set ARGOCD_READONLY_AUTH_TOKEN", workflow)
+        self.assertIn("::add-mask::$candidate", workflow)
+        self.assertIn("persist-credentials: false", workflow)
+        self.assertNotIn("argocd app sync", workflow)
+        self.assertNotIn("kubectl", workflow)
+        self.assertNotIn("upload-artifact", workflow)
+
+        preflight = workflow.split("      - name: Inspect current authority", 1)[1].split(
+            "  - name: Create only the fixed role", 1
+        )[0]
+        write_index = workflow.index("argocd proj role create default")
+        self.assertLess(workflow.index("argocd account can-i update projects default"), write_index)
+        self.assertLess(workflow.index("argocd proj get default --grpc-web --output json"), write_index)
+        mint = workflow.split("      - name: Create only the fixed role", 1)[1]
+        self.assertLess(mint.index("verify_argocd_permissions.py"), mint.index("gh secret set"))
+        self.assertIn('if [[ "$result" -ne 0 && "$stored" == false && "$role_created" == true ]]', mint)
+
+
+if __name__ == "__main__":
+    unittest.main()
