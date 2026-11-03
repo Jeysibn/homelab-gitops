@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
 import re
@@ -52,6 +53,14 @@ def extract_token(output: str) -> str:
     token = matches[0]
     if token.count(".") != 2 or len(token) < 40:
         raise ValueError("Argo CD token response is malformed")
+    try:
+        payload = token.split(".")[1]
+        claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+    except (ValueError, json.JSONDecodeError) as error:
+        raise ValueError("Argo CD token claims are malformed") from error
+    if (not isinstance(claims, dict) or not isinstance(claims.get("iat"), int)
+            or not isinstance(claims.get("exp"), int) or claims["exp"] - claims["iat"] != 3600):
+        raise ValueError("Argo CD token lifetime is not exactly one hour")
     return token
 
 

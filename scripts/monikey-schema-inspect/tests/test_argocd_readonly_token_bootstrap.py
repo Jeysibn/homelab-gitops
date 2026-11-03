@@ -1,4 +1,6 @@
 import importlib.util
+import base64
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -11,6 +13,13 @@ spec = importlib.util.spec_from_file_location(
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 REPO_ROOT = ROOT.parents[1]
+
+
+def fake_jwt(lifetime=3600):
+    header = base64.urlsafe_b64encode(b'{"alg":"none"}').decode().rstrip("=")
+    claims = json.dumps({"iat": 1000, "exp": 1000 + lifetime}).encode()
+    payload = base64.urlsafe_b64encode(claims).decode().rstrip("=")
+    return f"{header}.{payload}.signature"
 
 
 def project(roles=None):
@@ -50,9 +59,10 @@ class ReadonlyTokenBootstrapTests(unittest.TestCase):
                 module.role_plan(document)
 
     def test_token_extraction_requires_exactly_one_jwt_and_writes_private_file(self):
-        token = "header.payload.signature" + ("x" * 40)
+        token = fake_jwt()
         self.assertEqual(module.extract_token(f"Create token succeeded.\nToken: {token}\n"), token)
-        for output in ("Token: short", "Token: a.b.c\nToken: d.e.f"):
+        for output in ("Token: short", "Token: a.b.c\nToken: d.e.f",
+                       f"Token: {fake_jwt(1800)}"):
             with self.subTest(output=output), self.assertRaises(ValueError):
                 module.extract_token(output)
 
