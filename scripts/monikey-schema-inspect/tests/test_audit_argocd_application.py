@@ -251,6 +251,13 @@ class ArgoApplicationAuditTests(unittest.TestCase):
             ("action/*", "applications", "default/monikey-inspection-access"),
         }
         self.assertTrue(required_denials.issubset({check[:3] for check in permission_audit.PERMISSION_CHECKS}))
+        broad_denials = {
+            (action, resource, "*")
+            for resource in ("applicationsets", "clusters", "projects", "repositories",
+                             "certificates", "gpgkeys", "accounts")
+            for action in ("create", "update", "delete")
+        }
+        self.assertTrue(broad_denials.issubset({check[:3] for check in permission_audit.PERMISSION_CHECKS}))
 
     def test_cleanup_executes_on_success_and_failure_and_refuses_other_paths(self):
         helper = ROOT / "cleanup_audit_temp.sh"

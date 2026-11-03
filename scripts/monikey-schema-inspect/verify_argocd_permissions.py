@@ -23,6 +23,8 @@ PERMISSION_CHECKS = [
     ("action/*", "applications", APPLICATION_OBJECT, "no"),
     ("update/*", "applications", APPLICATION_OBJECT, "no"),
     ("delete/*", "applications", APPLICATION_OBJECT, "no"),
+    ("update/*", "applications", "*", "no"),
+    ("delete/*", "applications", "*", "no"),
     # Check for broad write grants inherited from policy.default or groups.
     ("create", "applications", "*", "no"),
     ("update", "applications", "*", "no"),
@@ -44,10 +46,14 @@ PERMISSION_CHECKS = [
     ("update", "repositories", "*", "no"),
     ("delete", "repositories", "*", "no"),
     ("create", "certificates", "*", "no"),
+    ("update", "certificates", "*", "no"),
     ("delete", "certificates", "*", "no"),
     ("create", "gpgkeys", "*", "no"),
+    ("update", "gpgkeys", "*", "no"),
     ("delete", "gpgkeys", "*", "no"),
+    ("create", "accounts", "*", "no"),
     ("update", "accounts", "*", "no"),
+    ("delete", "accounts", "*", "no"),
     ("create", "exec", "*", "no"),
     ("invoke", "extensions", "*", "no"),
 ]
