@@ -1,7 +1,9 @@
 import copy
 import importlib.util
 import json
+import os
 import re
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -13,6 +15,11 @@ spec = importlib.util.spec_from_file_location(
 audit = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(audit)
 REPO_ROOT = ROOT.parents[1]
+permission_spec = importlib.util.spec_from_file_location(
+    "verify_argocd_permissions", ROOT / "verify_argocd_permissions.py"
+)
+permission_audit = importlib.util.module_from_spec(permission_spec)
+permission_spec.loader.exec_module(permission_audit)
 
 
 def application(resources, *, automated=None, operation=None, source=None):
@@ -30,8 +37,9 @@ def application(resources, *, automated=None, operation=None, source=None):
     }
     if operation:
         spec["operation"] = {"initiatedBy": {"username": "fiction"}}
+    sync_status = "OutOfSync" if any(item.get("status") == "OutOfSync" for item in resources) else "Synced"
     status = {
-        "sync": {"status": "OutOfSync", "revision": "fictional-revision"},
+        "sync": {"status": sync_status, "revision": "fictional-revision"},
         "health": {"status": "Healthy"},
         "resources": resources,
     }
@@ -44,7 +52,7 @@ def application(resources, *, automated=None, operation=None, source=None):
     }
 
 
-def resource(item_id, *, missing=False, status=None, prune=False):
+def resource(item_id, *, missing=False, status=None, prune=False, health_status=None):
     group, kind, namespace, name = item_id
     return {
         "group": group,
@@ -52,7 +60,7 @@ def resource(item_id, *, missing=False, status=None, prune=False):
         "namespace": namespace,
         "name": name,
         "status": status or ("OutOfSync" if missing else "Synced"),
-        "health": {"status": "Missing" if missing else "Healthy"},
+        "health": {"status": health_status or ("Missing" if missing else "Healthy")},
         "requiresPruning": prune,
     }
 
@@ -164,6 +172,126 @@ class ArgoApplicationAuditTests(unittest.TestCase):
         self.assertFalse(result["sourceRepositoryMatches"])
         self.assertFalse(result["safeToSync"])
 
+    def test_unknown_application_or_resource_health_and_sync_status_block_verdict(self):
+        statuses = [resource(item_id) for item_id in audit.EXPECTED]
+        incomplete_app = application(statuses)
+        incomplete_app["status"]["health"] = {}
+        result = audit.summarize(incomplete_app, 0, exact_live_objects())
+        self.assertIn("Application health status", result["incompleteResourceStatus"])
+        self.assertFalse(result["safeToSync"])
+
+        statuses[0].pop("health")
+        result = audit.summarize(application(statuses), 0, exact_live_objects())
+        self.assertFalse(result["safeToSync"])
+
+        statuses = [resource(item_id) for item_id in audit.EXPECTED]
+        statuses[0]["status"] = "Unknown"
+        result = audit.summarize(application(statuses), 0, exact_live_objects())
+        self.assertFalse(result["safeToSync"])
+
+        statuses = [resource(item_id, missing=True) for item_id in audit.EXPECTED]
+        stale = application(statuses)
+        stale["status"]["sync"]["status"] = "Synced"
+        result = audit.summarize(stale, 1, {})
+        self.assertIn("Application sync/diff status", result["incompleteResourceStatus"])
+        self.assertFalse(result["safeToSync"])
+
+    def test_degraded_or_progressing_resource_health_blocks_verdict(self):
+        for health_status in ("Degraded", "Progressing", "Unknown"):
+            statuses = [resource(item_id) for item_id in audit.EXPECTED]
+            statuses[0]["health"]["status"] = health_status
+            result = audit.summarize(application(statuses), 0, exact_live_objects())
+            self.assertIn("ServiceAccount/monikey/monikey-schema-inspector", result["unsafeHealthResources"])
+            self.assertFalse(result["safeToSync"])
+
+    def test_effective_permissions_require_project_role_identity_and_no_write_grants(self):
+        class FakeRunner:
+            def __init__(self, allow=None, username=permission_audit.EXPECTED_USERNAME):
+                self.allow = allow or set()
+                self.username = username
+                self.commands = []
+
+            def __call__(self, command, **kwargs):
+                self.commands.append(command)
+                if command[1:4] == ["account", "get-user-info", "--grpc-web"]:
+                    output = json.dumps({"username": self.username})
+                elif command[1:3] == ["account", "can-i"]:
+                    check = tuple(command[3:6])
+                    output = "yes" if check in self.allow or check[0] == "get" else "no"
+                else:
+                    output = ""
+                return subprocess.CompletedProcess(command, 0, stdout=output, stderr="")
+
+        runner = FakeRunner()
+        permission_audit.verify("argocd", runner)
+        self.assertEqual(len(runner.commands), len(permission_audit.PERMISSION_CHECKS) + 1)
+        self.assertEqual(runner.commands[1][3:6], ["get", "applications", "default/monikey-inspection-access"])
+
+        with self.assertRaisesRegex(ValueError, "identity"):
+            permission_audit.verify("argocd", FakeRunner(username="admin"))
+
+        write_check = permission_audit.PERMISSION_CHECKS[1][:3]
+        with self.assertRaisesRegex(ValueError, "permissions"):
+            permission_audit.verify("argocd", FakeRunner(allow={write_check}))
+
+        class MalformedRunner(FakeRunner):
+            def __call__(self, command, **kwargs):
+                if command[1:3] == ["account", "can-i"]:
+                    return subprocess.CompletedProcess(command, 0, stdout="unknown", stderr="")
+                return super().__call__(command, **kwargs)
+
+        with self.assertRaisesRegex(ValueError, "permissions"):
+            permission_audit.verify("argocd", MalformedRunner())
+
+        required_denials = {
+            ("sync", "applications", "default/monikey-inspection-access"),
+            ("update", "applications", "default/monikey-inspection-access"),
+            ("delete", "applications", "default/monikey-inspection-access"),
+            ("override", "applications", "default/monikey-inspection-access"),
+            ("action/*", "applications", "default/monikey-inspection-access"),
+        }
+        self.assertTrue(required_denials.issubset({check[:3] for check in permission_audit.PERMISSION_CHECKS}))
+
+    def test_cleanup_executes_on_success_and_failure_and_refuses_other_paths(self):
+        helper = ROOT / "cleanup_audit_temp.sh"
+        for expected_exit in (0, 23):
+            with tempfile.TemporaryDirectory(prefix="audit-cleanup-test-") as temp_root:
+                env = os.environ.copy()
+                env.update({"RUNNER_TEMP": temp_root, "CLEANUP_HELPER": str(helper),
+                            "SIMULATED_EXIT": str(expected_exit)})
+                script = r'''set -euo pipefail
+work="$(mktemp -d "$RUNNER_TEMP/monikey-access-audit.XXXXXX")"
+trap 'bash "$CLEANUP_HELPER" "$RUNNER_TEMP" "$work"' EXIT
+mkdir "$work/live"
+printf fixture > "$work/live/report.json"
+exit "$SIMULATED_EXIT"
+'''
+                result = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True)
+                self.assertEqual(result.returncode, expected_exit, result.stderr)
+                self.assertEqual(list(Path(temp_root).iterdir()), [])
+
+        with tempfile.TemporaryDirectory(prefix="audit-cleanup-refusal-") as temp_root:
+            unrelated = Path(temp_root) / "unrelated"
+            unrelated.mkdir()
+            (unrelated / "keep.txt").write_text("keep")
+            result = subprocess.run(["bash", str(helper), temp_root, str(unrelated)],
+                                    capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertTrue((unrelated / "keep.txt").exists())
+
+            outside = Path(temp_root).parent / f"audit-cleanup-outside-{Path(temp_root).name}"
+            outside.mkdir()
+            (outside / "keep.txt").write_text("keep")
+            link = Path(temp_root) / "monikey-access-audit.ABC123"
+            link.symlink_to(outside, target_is_directory=True)
+            result = subprocess.run(["bash", str(helper), temp_root, str(link)],
+                                    capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertTrue((outside / "keep.txt").exists())
+            self.assertTrue(link.is_symlink())
+            (outside / "keep.txt").unlink()
+            outside.rmdir()
+
     def test_plan_only_requests_named_expected_live_resources(self):
         statuses = [resource(item_id, missing=(item_id[3] == "monikey-inspection-token-issuer"))
                     for item_id in audit.EXPECTED]
@@ -210,11 +338,18 @@ class ArgoApplicationAuditTests(unittest.TestCase):
         self.assertIn("github.ref == 'refs/heads/main' && inputs.confirm_read_only_audit", workflow)
         self.assertIn("name: monikey-inspection-provisioning", workflow)
         self.assertIn("ARGOCD_READONLY_AUTH_TOKEN", workflow)
+        self.assertIn("ARGOCD_AUTH_TOKEN: ${{ secrets.ARGOCD_READONLY_AUTH_TOKEN }}", workflow)
+        self.assertNotIn("secrets.ARGOCD_AUTH_TOKEN", workflow)
         self.assertIn("tailscale/github-action@v2", workflow)
         self.assertIn("argocd app get monikey-inspection-access", workflow)
+        self.assertIn("verify_argocd_permissions.py", workflow)
+        self.assertLess(workflow.index("verify_argocd_permissions.py"),
+                        workflow.index("Inspect Application and compare resources"))
         self.assertIn("--app-namespace argocd", workflow)
         self.assertNotIn("--namespace monikey", workflow)
         self.assertIn("argocd app diff monikey-inspection-access", workflow)
+        self.assertIn("cleanup_audit_temp.sh", workflow)
+        self.assertNotIn("rglob(\"*\")", workflow)
         self.assertNotIn("argocd app sync", workflow)
         self.assertNotIn("argocd app wait", workflow)
         self.assertNotIn("--hard-refresh", workflow)

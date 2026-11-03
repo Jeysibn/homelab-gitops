@@ -121,14 +121,21 @@ jobs:
           sha256sum --check argocd.sha256
           sudo install -m 0755 argocd-linux-amd64 /usr/local/bin/argocd
 
+      - name: Verify the token identity and effective read-only permissions
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/monikey-schema-inspect/verify_argocd_permissions.py
+
       - name: Inspect Application and compare resources without applying changes
         shell: bash
         run: |
           set -euo pipefail
           umask 077
-          work="$RUNNER_TEMP/monikey-access-audit"
+          work="$(mktemp -d "$RUNNER_TEMP/monikey-access-audit.XXXXXX")"
+          trap 'bash scripts/monikey-schema-inspect/cleanup_audit_temp.sh "$RUNNER_TEMP" "$work"' EXIT
+          chmod 700 "$work"
           install -d -m 700 "$work/live"
-          trap 'python3 -c "from pathlib import Path; import sys; p=Path(sys.argv[1]); [x.unlink() for x in p.rglob("*") if x.is_file()]; [x.rmdir() for x in sorted((x for x in p.rglob("*") if x.is_dir()), reverse=True)]; p.rmdir()" "$work"' EXIT
 
           if ! argocd app get monikey-inspection-access --grpc-web --output json \
               > "$work/application.json" 2> "$work/argocd-error.log"; then

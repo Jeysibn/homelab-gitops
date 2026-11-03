@@ -116,6 +116,8 @@ def summarize(application: dict, diff_exit_code: int, live_objects: dict[str, di
     operation_state = status.get("operationState") or {}
     operation_phase = operation_state.get("phase", "")
     operation_running = operation_phase in {"Pending", "Running", "Terminating"} or bool(spec.get("operation"))
+    application_sync_status = (status.get("sync") or {}).get("status")
+    application_health_status = (status.get("health") or {}).get("status")
 
     source_ok = (
         all(source.get(key) == value for key, value in EXPECTED_SOURCE.items())
@@ -135,6 +137,14 @@ def summarize(application: dict, diff_exit_code: int, live_objects: dict[str, di
     deletions = []
     live_count = 0
     incomplete = []
+    unsafe_health = []
+
+    if application_sync_status not in {"Synced", "OutOfSync"}:
+        incomplete.append("Application sync status")
+    elif (application_sync_status == "OutOfSync") != (diff_exit_code == 1):
+        incomplete.append("Application sync/diff status")
+    if application_health_status not in {"Healthy", "Missing"}:
+        incomplete.append("Application health status")
 
     for resource in resources:
         if not isinstance(resource, dict):
@@ -149,18 +159,23 @@ def summarize(application: dict, diff_exit_code: int, live_objects: dict[str, di
         pruning = resource.get("requiresPruning") is True
         health = resource.get("health")
         health_status = health.get("status") if isinstance(health, dict) else None
+        sync_status = resource.get("status")
         if health_status is None:
             incomplete.append(label)
         elif health_status != "Missing":
             live_count += 1
+        if sync_status not in {"Synced", "OutOfSync"}:
+            incomplete.append(label)
+        if health_status not in {"Healthy", "Missing"}:
+            unsafe_health.append(label)
+        if health_status == "Missing" and (sync_status != "OutOfSync" or pruning):
+            incomplete.append(label)
         if pruning:
             deletions.append(label)
         elif health_status == "Missing":
             additions.append(label)
-        elif resource.get("status") == "OutOfSync":
+        elif sync_status == "OutOfSync":
             updates.append(label)
-        elif resource.get("status") not in {"Synced", "OutOfSync"}:
-            incomplete.append(label)
 
     missing_status = ["/".join(item) for item in EXPECTED if item not in by_identity]
     if missing_status:
@@ -193,7 +208,7 @@ def summarize(application: dict, diff_exit_code: int, live_objects: dict[str, di
         and spec.get("project") == "default"
         and source_ok and destination_ok and not automated_enabled and not operation_running
         and desired_count == len(EXPECTED) and not unexpected and not incomplete
-        and not updates and not deletions and diff_consistent and rbac_valid
+        and not unsafe_health and not updates and not deletions and diff_consistent and rbac_valid
     )
 
     return {
@@ -202,6 +217,7 @@ def summarize(application: dict, diff_exit_code: int, live_objects: dict[str, di
         "projectMatches": spec.get("project") == "default",
         "syncStatus": (status.get("sync") or {}).get("status", "Unknown"),
         "health": (status.get("health") or {}).get("status", "Unknown"),
+        "unsafeHealthResources": sorted(unsafe_health),
         "targetRevision": source.get("targetRevision"),
         "observedRevision": (status.get("sync") or {}).get("revision"),
         "sourcePath": source.get("path"),
