@@ -90,16 +90,44 @@ jobs:
             --env POSTGRES_PASSWORD=temporary-verification-only \
             postgres:17.6-alpine > /dev/null
 
+          # The official image briefly starts a temporary PostgreSQL server
+          # while initializing an empty PGDATA. pg_isready can succeed against
+          # that server just before the entrypoint stops it, so wait for the
+          # initialization-complete log marker before probing the final server.
+          initialized=false
+          for attempt in {1..60}; do
+            if docker logs "$container" 2>&1 \
+              | grep -F 'PostgreSQL init process complete; ready for start up.' > /dev/null; then
+              initialized=true
+              break
+            fi
+            sleep 1
+          done
+          if [[ "$initialized" != true ]]; then
+            docker logs "$container" >&2
+            echo '::error::Disposable PostgreSQL initialization did not complete.'
+            exit 1
+          fi
+
           ready=false
           for attempt in {1..30}; do
-            if docker exec "$container" pg_isready --username=postgres \
-              --dbname=monikey_backup_verify > /dev/null 2>&1; then
+            if docker exec "$container" psql \
+              --username=postgres \
+              --dbname=monikey_backup_verify \
+              --no-psqlrc \
+              --tuples-only \
+              --no-align \
+              --command='SELECT 1' > /dev/null 2>&1; then
               ready=true
               break
             fi
             sleep 1
           done
-          [[ "$ready" == true ]]
+          if [[ "$ready" != true ]]; then
+            docker logs "$container" >&2
+            echo '::error::Disposable PostgreSQL did not accept a SQL readiness probe.'
+            exit 1
+          fi
 
           docker exec --interactive "$container" \
             pg_restore --username=postgres --dbname=monikey_backup_verify \
