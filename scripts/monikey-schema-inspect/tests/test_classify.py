@@ -175,6 +175,38 @@ class ClassificationTests(unittest.TestCase):
         for forbidden in ('"pods/exec"', '"secrets"', 'kind: ClusterRole', 'kind: ClusterRoleBinding'):
             self.assertNotIn(forbidden, access)
 
+    def test_kubectl_authorization_checks_match_scoped_rbac(self):
+        inspection = (ROOT.parents[1] / ".github/workflows/monikey-schema-inspection.yml").read_text()
+        provisioning = (ROOT.parents[1] / ".github/workflows/monikey-inspection-credentials.yml").read_text()
+        access = (ROOT.parents[1] / "kubernetes/platform/monikey/inspection-access/manifests/access.yaml").read_text()
+        backup = (ROOT.parents[1] / "kubernetes/platform/monikey/manifests/backup-access.yaml").read_text()
+
+        def commands(workflow):
+            normalized = re.sub(r"\\\n\s*", "", workflow)
+            return [line.strip() for line in normalized.splitlines()
+                    if "kubectl --request-timeout=10s auth can-i " in line]
+
+        self.assertEqual(commands(inspection), [
+            "kubectl --request-timeout=10s auth can-i get pods/postgres-0 --namespace monikey --quiet",
+            "kubectl --request-timeout=10s auth can-i create pods/postgres-0 --subresource=portforward --namespace monikey --quiet",
+        ])
+        self.assertEqual(commands(provisioning), [
+            "kubectl --request-timeout=10s auth can-i get pods/postgres-0 --namespace monikey --quiet",
+            "kubectl --request-timeout=10s auth can-i get pods/postgres-0 --subresource=exec --namespace monikey --quiet",
+            "kubectl --request-timeout=10s auth can-i create pods/postgres-0 --subresource=exec --namespace monikey --quiet",
+            "kubectl --request-timeout=10s auth can-i create serviceaccounts/monikey-schema-inspector --subresource=token --namespace monikey --quiet",
+        ])
+        for text in (inspection, provisioning):
+            self.assertNotRegex(text, r"kubectl .*auth can-i get pods(?:\s|$)")
+            self.assertNotIn("--resource-name=", text)
+        self.assertIn('resourceNames: ["postgres-0"]', access)
+        self.assertIn('resources: ["pods/portforward"]', access)
+        self.assertIn('resources: ["serviceaccounts/token"]', access)
+        self.assertIn('resourceNames: ["monikey-schema-inspector"]', access)
+        self.assertIn('resources: ["pods/exec"]', backup)
+        self.assertIn('verbs: ["create", "get"]', backup)
+        self.assertIn('resourceNames: ["postgres-0"]', backup)
+
     def test_role_provisioning_has_no_database_wide_acl_changes(self):
         sql = (ROOT / "provision_role.sql").read_text().lower()
         self.assertIn("create role monikey_schema_inspector", sql)

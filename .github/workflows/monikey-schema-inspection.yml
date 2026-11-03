@@ -134,8 +134,9 @@ jobs:
             echo '::error::Kubernetes API server does not match the approved cluster identity.'
             exit 1
           }
-          kubectl --request-timeout=10s auth can-i get pods --namespace monikey --quiet
-          kubectl --request-timeout=10s auth can-i create pods/portforward --namespace monikey --resource-name=postgres-0 --quiet
+          kubectl --request-timeout=10s auth can-i get pods/postgres-0 --namespace monikey --quiet
+          kubectl --request-timeout=10s auth can-i create pods/postgres-0 \
+            --subresource=portforward --namespace monikey --quiet
           kubectl --request-timeout=10s get pod postgres-0 --namespace monikey -o json \
             | python3 scripts/monikey-schema-inspect/check_pod.py
 
