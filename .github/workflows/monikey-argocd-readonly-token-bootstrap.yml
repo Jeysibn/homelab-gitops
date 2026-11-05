@@ -103,6 +103,23 @@ jobs:
           : "${TS_OAUTH_SECRET:?Configure Tailscale connectivity credentials}"
           command -v gh >/dev/null
 
+      - name: Require fresh global Argo CD RBAC evidence
+        env:
+          ARGOCD_RBAC_EVIDENCE_B64: ${{ vars.ARGOCD_RBAC_EVIDENCE_B64 }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          evidence="$RUNNER_TEMP/monikey-argocd-rbac-evidence.json"
+          if [[ -z "${ARGOCD_RBAC_EVIDENCE_B64:-}" ]] || \
+              ! printf '%s' "$ARGOCD_RBAC_EVIDENCE_B64" | base64 --decode > "$evidence" 2>/dev/null; then
+            echo '::error::Fresh global Argo CD RBAC evidence is unavailable; bootstrap stopped before writes.'
+            exit 1
+          fi
+          chmod 600 "$evidence"
+          python3 scripts/monikey-schema-inspect/verify_argocd_permissions.py \
+            --rbac-evidence-file "$evidence" --check-rbac-evidence
+
       - name: Connect to Tailscale
         uses: tailscale/github-action@v2
         with:
@@ -215,6 +232,7 @@ jobs:
           ARGOCD_AUTH_TOKEN: ${{ secrets.ARGOCD_AUTH_TOKEN }}
           SECRET_WRITER_TOKEN: ${{ secrets.MONIKEY_ENVIRONMENT_SECRET_WRITER_TOKEN }}
           ARGOCD_SERVER_CRT_FILE: ${{ runner.temp }}/monikey-argocd-server-trust.pem
+          ARGOCD_RBAC_EVIDENCE_FILE: ${{ runner.temp }}/monikey-argocd-rbac-evidence.json
         shell: bash
         run: |
           set -euo pipefail
@@ -298,6 +316,8 @@ jobs:
           unset candidate
           if ! ARGOCD_AUTH_TOKEN="$(<"$work/candidate-token")" \
               python3 scripts/monikey-schema-inspect/verify_argocd_permissions.py \
+              --rbac-evidence-file "$ARGOCD_RBAC_EVIDENCE_FILE" \
+              --project-json-file "$work/project-after-write.json" \
               > "$work/permission-check.log" 2> "$work/permission-check-error.log"; then
             echo '::error::Candidate token failed effective read-only identity/permission checks; it will not be stored.'
             exit 1
@@ -321,3 +341,5 @@ jobs:
           [[ ! -d "$work" ]] || rm -rf "$work"
           trust_cert="$RUNNER_TEMP/monikey-argocd-server-trust.pem"
           [[ ! -f "$trust_cert" ]] || rm -f "$trust_cert"
+          rbac_evidence="$RUNNER_TEMP/monikey-argocd-rbac-evidence.json"
+          [[ ! -f "$rbac_evidence" ]] || rm -f "$rbac_evidence"

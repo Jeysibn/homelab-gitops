@@ -7,6 +7,7 @@ import sys
 import threading
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 import json
@@ -240,13 +241,15 @@ class ArgoCertificateDiagnosticTests(unittest.TestCase):
         ):
             self.assertIn(command, audit_script)
         self.assertIn("verify_argocd_permissions.py", all_steps)
-        final_cleanup = next(step for step in job["steps"] if step.get("name") == "Remove temporary TLS trust file")
+        final_cleanup = next(step for step in job["steps"] if step.get("name") == "Remove temporary TLS trust and RBAC evidence files")
         self.assertEqual(final_cleanup.get("if"), "always()")
         self.assertIn("monikey-argocd-server-trust.pem", final_cleanup.get("run", ""))
         for previous_result in (0, 1):
             with self.subTest(previous_step_result=previous_result), tempfile.TemporaryDirectory() as directory:
                 trust_file = Path(directory) / "monikey-argocd-server-trust.pem"
+                evidence_file = Path(directory) / "monikey-argocd-rbac-evidence.json"
                 trust_file.write_text("disposable certificate fixture")
+                evidence_file.write_text("disposable evidence fixture")
                 result = subprocess.run(
                     ["bash", "-c", final_cleanup["run"]],
                     env={"RUNNER_TEMP": directory, "PREVIOUS_STEP_RESULT": str(previous_result)},
@@ -254,6 +257,7 @@ class ArgoCertificateDiagnosticTests(unittest.TestCase):
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertFalse(trust_file.exists())
+                self.assertFalse(evidence_file.exists())
         self.assertNotIn("--insecure", all_steps)
 
     def test_permission_verifier_rejects_missing_configured_trust_file(self):
@@ -291,7 +295,23 @@ class ArgoCertificateDiagnosticTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             trust_file = Path(directory) / "trust.pem"
             trust_file.write_text("fixture certificate")
-            verifier.verify(run=runner, server_crt=str(trust_file))
+            rbac_evidence = Path(directory) / "rbac-evidence.json"
+            rbac_evidence.write_text(json.dumps({
+                "capturedAt": datetime.now(timezone.utc).isoformat(),
+                "appProject": {
+                    "metadata": {"name": "default", "namespace": "argocd", "uid": "project", "resourceVersion": "1"},
+                    "spec": {"roles": [{
+                        "name": "monikey-inspection-reader",
+                        "policies": ["p, proj:default:monikey-inspection-reader, applications, get, default/monikey-inspection-access, allow"],
+                        "groups": [],
+                    }]},
+                },
+                "configMap": {
+                    "metadata": {"name": "argocd-rbac-cm", "namespace": "argocd", "uid": "rbac", "resourceVersion": "1"},
+                    "data": {"policy.default": "role:readonly", "policy.csv": ""},
+                },
+            }))
+            verifier.verify(run=runner, server_crt=str(trust_file), rbac_evidence_file=str(rbac_evidence))
         self.assertTrue(calls)
         self.assertTrue(all(
             command[1:3] == ["--server-crt", str(trust_file)]

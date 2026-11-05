@@ -98,6 +98,23 @@ jobs:
           : "${TS_OAUTH_CLIENT_ID:?Configure Tailscale connectivity credentials}"
           : "${TS_OAUTH_SECRET:?Configure Tailscale connectivity credentials}"
 
+      - name: Require fresh global Argo CD RBAC evidence
+        env:
+          ARGOCD_RBAC_EVIDENCE_B64: ${{ vars.ARGOCD_RBAC_EVIDENCE_B64 }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          evidence="$RUNNER_TEMP/monikey-argocd-rbac-evidence.json"
+          if [[ -z "${ARGOCD_RBAC_EVIDENCE_B64:-}" ]] || \
+              ! printf '%s' "$ARGOCD_RBAC_EVIDENCE_B64" | base64 --decode > "$evidence" 2>/dev/null; then
+            echo '::error::Fresh global Argo CD RBAC evidence is unavailable; audit is blocked.'
+            exit 1
+          fi
+          chmod 600 "$evidence"
+          python3 scripts/monikey-schema-inspect/verify_argocd_permissions.py \
+            --rbac-evidence-file "$evidence" --check-rbac-evidence
+
       - name: Connect to Tailscale
         uses: tailscale/github-action@v2
         with:
@@ -161,7 +178,8 @@ jobs:
           else
             unset ARGOCD_SERVER_CRT_FILE || true
           fi
-          python3 scripts/monikey-schema-inspect/verify_argocd_permissions.py
+          python3 scripts/monikey-schema-inspect/verify_argocd_permissions.py \
+            --rbac-evidence-file "$RUNNER_TEMP/monikey-argocd-rbac-evidence.json"
 
       - name: Inspect Application and compare resources without applying changes
         env:
@@ -236,9 +254,11 @@ jobs:
           python3 scripts/monikey-schema-inspect/audit_argocd_application.py \
             report "$work/application.json" "$diff_result" "$work/live" "$work/report.json"
 
-      - name: Remove temporary TLS trust file
+      - name: Remove temporary TLS trust and RBAC evidence files
         if: always()
         shell: bash
         run: |
           certificate="$RUNNER_TEMP/monikey-argocd-server-trust.pem"
           [[ ! -f "$certificate" ]] || rm -f "$certificate"
+          evidence="$RUNNER_TEMP/monikey-argocd-rbac-evidence.json"
+          [[ ! -f "$evidence" ]] || rm -f "$evidence"

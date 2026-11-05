@@ -101,6 +101,11 @@ class ReadonlyTokenBootstrapTests(unittest.TestCase):
         self.assertIn("--action get --permission allow --object monikey-inspection-access", workflow)
         self.assertIn("--expires-in 1h", workflow)
         self.assertIn("verify_argocd_permissions.py", workflow)
+        self.assertIn("vars.ARGOCD_RBAC_EVIDENCE_B64", workflow)
+        self.assertIn("--check-rbac-evidence", workflow)
+        self.assertIn("--project-json-file", workflow)
+        self.assertLess(workflow.index("Require fresh global Argo CD RBAC evidence"),
+                        workflow.index("proj role create default"))
         self.assertIn("gh secret set ARGOCD_READONLY_AUTH_TOKEN", workflow)
         self.assertIn("::add-mask::$candidate", workflow)
         self.assertIn("persist-credentials: false", workflow)
