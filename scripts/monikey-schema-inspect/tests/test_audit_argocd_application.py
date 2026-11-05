@@ -227,11 +227,11 @@ class ArgoApplicationAuditTests(unittest.TestCase):
         self.assertEqual(len(runner.commands), len(permission_audit.PERMISSION_CHECKS) + 1)
         self.assertEqual(runner.commands[1][3:6], ["get", "applications", "default/monikey-inspection-access"])
 
-        with self.assertRaisesRegex(ValueError, "identity"):
+        with self.assertRaisesRegex(ValueError, "IDENTITY_MISMATCH"):
             permission_audit.verify("argocd", FakeRunner(username="admin"))
 
         write_check = permission_audit.PERMISSION_CHECKS[1][:3]
-        with self.assertRaisesRegex(ValueError, "permissions"):
+        with self.assertRaisesRegex(ValueError, "UNEXPECTED_PERMISSION_ALLOWED"):
             permission_audit.verify("argocd", FakeRunner(allow={write_check}))
 
         class MalformedRunner(FakeRunner):
@@ -240,7 +240,7 @@ class ArgoApplicationAuditTests(unittest.TestCase):
                     return subprocess.CompletedProcess(command, 0, stdout="unknown", stderr="")
                 return super().__call__(command, **kwargs)
 
-        with self.assertRaisesRegex(ValueError, "permissions"):
+        with self.assertRaisesRegex(ValueError, "INVALID_PERMISSION_RESPONSE"):
             permission_audit.verify("argocd", MalformedRunner())
 
         required_denials = {

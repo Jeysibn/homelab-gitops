@@ -261,7 +261,7 @@ class ArgoCertificateDiagnosticTests(unittest.TestCase):
         verifier_spec = importlib.util.spec_from_file_location("verify_argocd_permissions_missing", verifier_path)
         verifier = importlib.util.module_from_spec(verifier_spec)
         verifier_spec.loader.exec_module(verifier)
-        with self.assertRaisesRegex(ValueError, "trust certificate"):
+        with self.assertRaisesRegex(ValueError, "TLS_OR_TRUST_FAILURE"):
             verifier.verify(run=lambda *args, **kwargs: self.fail("Argo CD must not be invoked"),
                             server_crt="/does/not/exist/trust.pem")
 

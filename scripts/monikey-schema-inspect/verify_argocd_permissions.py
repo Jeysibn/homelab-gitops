@@ -13,6 +13,22 @@ from pathlib import Path
 EXPECTED_USERNAME = "proj:default:monikey-inspection-reader"
 APPLICATION_OBJECT = "default/monikey-inspection-access"
 
+
+class VerificationFailure(ValueError):
+    def __init__(self, category: str, check_number: int | None = None, expected: str | None = None):
+        self.category = category
+        self.check_number = check_number
+        self.expected = expected
+        super().__init__(self.diagnostic())
+
+    def diagnostic(self) -> str:
+        if self.check_number is not None:
+            return (
+                f"Argo CD permission check {self.check_number:02d} expected {self.expected}: "
+                f"{self.category}."
+            )
+        return f"Argo CD verification failed: {self.category}."
+
 # The first check is required for this audit. All remaining checks must be
 # denied, including the effective default role and resource-level actions.
 PERMISSION_CHECKS = [
@@ -62,10 +78,24 @@ PERMISSION_CHECKS = [
 ]
 
 
+def request_category(message: str) -> str:
+    lowered = message.lower()
+    if any(marker in lowered for marker in ("x509", "certificate", "tls", "unknown authority")):
+        return "TLS_OR_TRUST_FAILURE"
+    if any(marker in lowered for marker in ("deadline exceeded", "timed out", "timeout", "i/o timeout")):
+        return "CONNECTION_TIMEOUT"
+    return "AUTHENTICATION_OR_REQUEST_ERROR"
+
+
 def run_checked(command: list[str], run=subprocess.run) -> str:
-    result = run(command, capture_output=True, text=True, timeout=20, check=False)
+    try:
+        result = run(command, capture_output=True, text=True, timeout=20, check=False)
+    except subprocess.TimeoutExpired as error:
+        raise VerificationFailure("CONNECTION_TIMEOUT") from error
+    except OSError as error:
+        raise VerificationFailure("AUTHENTICATION_OR_REQUEST_ERROR") from error
     if result.returncode != 0:
-        raise ValueError("Argo CD permission query failed")
+        raise VerificationFailure(request_category(result.stderr or ""))
     return result.stdout.strip()
 
 
@@ -74,24 +104,30 @@ def verify(executable: str = "argocd", run=subprocess.run, server_crt: str | Non
     if server_crt:
         certificate = Path(server_crt)
         if not certificate.is_file() or not os.access(certificate, os.R_OK):
-            raise ValueError("trust certificate file is missing or unreadable")
+            raise VerificationFailure("TLS_OR_TRUST_FAILURE")
         command_prefix.extend(["--server-crt", server_crt])
     identity_output = run_checked(
         [*command_prefix, "account", "get-user-info", "--grpc-web", "--output", "json"], run
     )
     try:
         identity = json.loads(identity_output)
-    except json.JSONDecodeError as error:
-        raise ValueError("Argo CD returned an unreadable token identity") from error
+    except (json.JSONDecodeError, TypeError) as error:
+        raise VerificationFailure("INVALID_PERMISSION_RESPONSE") from error
     if not isinstance(identity, dict) or identity.get("username") != EXPECTED_USERNAME:
-        raise ValueError("token is not the dedicated inspection project-role identity")
+        raise VerificationFailure("IDENTITY_MISMATCH")
 
-    for action, resource, object_name, expected in PERMISSION_CHECKS:
-        actual = run_checked(
-            [*command_prefix, "account", "can-i", action, resource, object_name, "--grpc-web"], run
-        )
-        if actual not in {"yes", "no"} or actual != expected:
-            raise ValueError("effective Argo CD permissions do not match the read-only policy")
+    for check_number, (action, resource, object_name, expected) in enumerate(PERMISSION_CHECKS, start=1):
+        try:
+            actual = run_checked(
+                [*command_prefix, "account", "can-i", action, resource, object_name, "--grpc-web"], run
+            )
+        except VerificationFailure as error:
+            raise VerificationFailure(error.category, check_number, expected) from error
+        if actual not in {"yes", "no"}:
+            raise VerificationFailure("INVALID_PERMISSION_RESPONSE", check_number, expected)
+        if actual != expected:
+            category = "REQUIRED_PERMISSION_DENIED" if expected == "yes" else "UNEXPECTED_PERMISSION_ALLOWED"
+            raise VerificationFailure(category, check_number, expected)
 
 
 def main() -> int:
@@ -100,8 +136,11 @@ def main() -> int:
     args = parser.parse_args()
     try:
         verify(server_crt=args.server_crt)
+    except VerificationFailure as error:
+        print(f"::error::{error.diagnostic()}")
+        return 1
     except (OSError, subprocess.SubprocessError, ValueError, TypeError):
-        print("::error::Argo CD token identity or effective permissions failed closed.")
+        print("::error::Argo CD verification failed: AUTHENTICATION_OR_REQUEST_ERROR.")
         return 1
     print("Argo CD token identity and effective read-only permissions verified.")
     return 0
