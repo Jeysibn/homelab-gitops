@@ -162,7 +162,7 @@ class VerifyArgocdPermissionsDiagnosticTests(unittest.TestCase):
 
     def test_every_live_can_i_probe_uses_v351_supported_values(self):
         self.assertEqual(verifier.SUPPORTED_ACTIONS, {
-            "get", "create", "update", "delete", "sync", "override", "action", "invoke",
+            "get", "create", "update", "delete", "sync", "rollback", "override", "action", "invoke",
         })
         self.assertEqual(verifier.SUPPORTED_RESOURCES, {
             "clusters", "projects", "applications", "applicationsets", "repositories",
@@ -178,6 +178,13 @@ class VerifyArgocdPermissionsDiagnosticTests(unittest.TestCase):
                       verifier.PERMISSION_CHECKS)
         self.assertFalse(any(action == "rollback" for action, *_ in verifier.PERMISSION_CHECKS))
 
+    def test_projects_read_denial_is_a_mandatory_live_probe(self):
+        check = ("get", "projects", "*")
+        self.assertIn((*check, "no"), verifier.PERMISSION_CHECKS)
+        with self.assertRaises(verifier.VerificationFailure) as caught:
+            self.verify(runner_for(permission_values={check: "yes"}))
+        self.assertEqual(caught.exception.category, "UNEXPECTED_PERMISSION_ALLOWED")
+
     def test_project_scoped_broad_checks_use_project_object_wildcards(self):
         for action, resource, object_name, _expected in verifier.PERMISSION_CHECKS:
             if resource in {"applications", "applicationsets", "exec"} and object_name in {"*", "*/*"}:
@@ -186,6 +193,7 @@ class VerifyArgocdPermissionsDiagnosticTests(unittest.TestCase):
 
     def test_fine_grained_mutation_grants_block_verification(self):
         policies = (
+            "p, role:readonly, applications, rollback, default/monikey-inspection-access, allow",
             "p, role:readonly, applications, update/*, *, allow",
             "p, role:unrelated, applications, delete/spec/replicas, *, allow",
             "p, role:unrelated, *, action/extensions/*, *, allow",
@@ -309,7 +317,8 @@ class VerifyArgocdPermissionsDiagnosticTests(unittest.TestCase):
 
     def test_standard_policy_and_live_permission_probes_accept_valid_evidence(self):
         self.write_evidence(evidence_document(
-            "p, role:inspection, applications, get, default/monikey-inspection-access, allow"
+            "p, proj:default:monikey-inspection-reader, applications, get, "
+            "default/monikey-inspection-access, allow"
         ))
         calls = []
         base_runner = runner_for()
@@ -326,7 +335,8 @@ class VerifyArgocdPermissionsDiagnosticTests(unittest.TestCase):
         data = {
             "policy.github-actions.csv": "g, fixture-user, role:fixture",
             "policy.github-actions-project.csv": "g, role:fixture, role:reader",
-            "policy.z.csv": "p, role:reader, applications, get, default/monikey-inspection-access, allow",
+            "policy.z.csv": "p, proj:default:monikey-inspection-reader, applications, get, "
+                            "default/monikey-inspection-access, allow",
         }
         self.write_evidence(evidence_document(extra_data=data))
         self.validate()
@@ -336,7 +346,7 @@ class VerifyArgocdPermissionsDiagnosticTests(unittest.TestCase):
         self.validate()
 
         safe_policy = (
-            "p, role:fragment-reader, applications, get, "
+            "p, proj:default:monikey-inspection-reader, applications, get, "
             "default/monikey-inspection-access, allow"
         )
         self.write_evidence(evidence_document(extra_data={
@@ -372,9 +382,9 @@ class VerifyArgocdPermissionsDiagnosticTests(unittest.TestCase):
                 self.assertEqual(parsed_fields, expected_fields)
 
         for policy in (
-            '# regular comment\np, role:reader, applications, get, '
+            '# regular comment\np, proj:default:monikey-inspection-reader, applications, get, '
             'default/monikey-inspection-access, allow',
-            '   # indented comment\np, role:reader, applications, get, '
+            '   # indented comment\np, proj:default:monikey-inspection-reader, applications, get, '
             'default/monikey-inspection-access, allow',
         ):
             self.write_evidence(evidence_document(policy))
@@ -417,7 +427,15 @@ class VerifyArgocdPermissionsDiagnosticTests(unittest.TestCase):
                 "default/monikey-inspection-access", "allow",
             ],
             'p,\u00a0role:reader, applications, get, default/monikey-inspection-access, allow': [
-                "p", "\u00a0role:reader", "applications", "get",
+                "p", "role:reader", "applications", "get",
+                "default/monikey-inspection-access", "allow",
+            ],
+            'p,\u2003role:reader, applications, get, default/monikey-inspection-access, allow': [
+                "p", "role:reader", "applications", "get",
+                "default/monikey-inspection-access", "allow",
+            ],
+            'p,\u3000" role:reader ", applications, get, default/monikey-inspection-access, allow': [
+                "p", " role:reader ", "applications", "get",
                 "default/monikey-inspection-access", "allow",
             ],
             'p, role:reader , applications, get, default/monikey-inspection-access, allow': [
@@ -446,21 +464,22 @@ class VerifyArgocdPermissionsDiagnosticTests(unittest.TestCase):
 
         verifier.validate_composed_policy({
             "policy.csv": (
-                'p, "role,reader", applications, get, '
+                'p, "proj:default:monikey-inspection-reader", applications, get, '
                 "default/monikey-inspection-access, allow"
             ),
         })
         with self.assertRaises(verifier.VerificationFailure) as invalid_type:
             verifier.validate_composed_policy({
                 "policy.csv": (
-                    "p , role:reader, applications, get, "
+                    "p , proj:default:monikey-inspection-reader, applications, get, "
                     "default/monikey-inspection-access, allow"
                 ),
             })
         self.assertEqual(invalid_type.exception.category, "RBAC_POLICY_VALIDATION")
 
     def test_only_empty_physical_lines_are_skipped(self):
-        valid = "p, role:reader, applications, get, default/monikey-inspection-access, allow"
+        valid = "p, proj:default:monikey-inspection-reader, applications, get, " \
+                "default/monikey-inspection-access, allow"
         self.write_evidence(evidence_document("\n  \t\u00a0\n" + valid + "\r\n"))
         self.validate()
 
@@ -522,6 +541,11 @@ class VerifyArgocdPermissionsDiagnosticTests(unittest.TestCase):
 
     def test_unsafe_fragment_cannot_hide_among_safe_fragments(self):
         unsafe = [
+            "p, role:unrelated, projects, get, *, allow",
+            "p, role:unrelated, projects, get, default, allow",
+            "p, role:unrelated, clusters, get, *, allow",
+            "p, role:unrelated, applications, get, default/other, allow",
+            "p, *, applications, get, default/monikey-inspection-access, allow",
             "p, role:unrelated, applications, get, */*, allow",
             "p, role:unrelated, applications, sync, default/other, allow",
             "p, role:unrelated, applications, update/spec/replicas, *, allow",
@@ -537,6 +561,44 @@ class VerifyArgocdPermissionsDiagnosticTests(unittest.TestCase):
             with self.subTest(policy="withheld"), self.assertRaises(verifier.VerificationFailure) as caught:
                 self.validate()
             self.assertEqual(caught.exception.category, "RBAC_POLICY_UNSAFE")
+
+    def test_unsafe_read_grants_are_rejected_in_every_composed_fragment(self):
+        unsafe = (
+            "p, role:unrelated, projects, get, *, allow",
+            "p, role:unrelated, clusters, get, *, allow",
+            "p, role:unrelated, applicationsets, get, */*, allow",
+            "p, role:unrelated, applications, get, default/other, allow",
+        )
+        for key in ("policy.csv", "policy..csv", "policy.extra.csv"):
+            for policy in unsafe:
+                data = {key: policy}
+                with self.subTest(key=key, policy="withheld"):
+                    with self.assertRaises(verifier.VerificationFailure) as caught:
+                        verifier.validate_composed_policy(data)
+                    self.assertEqual(caught.exception.category, "RBAC_POLICY_UNSAFE")
+
+    def test_only_exact_expected_identity_application_read_is_allowed(self):
+        valid = (
+            "p, proj:default:monikey-inspection-reader, applications, get, "
+            "default/monikey-inspection-access, allow"
+        )
+        verifier.validate_composed_policy({"policy.csv": valid})
+        with self.assertRaises(verifier.VerificationFailure) as wildcard_subject:
+            verifier.validate_composed_policy({
+                "policy.csv": "p, *, applications, get, "
+                               "default/monikey-inspection-access, allow"
+            })
+        self.assertEqual(wildcard_subject.exception.category, "RBAC_POLICY_UNSAFE")
+
+    def test_group_mapping_cannot_inherit_authorized_identity_permissions(self):
+        policy = (
+            "p, proj:default:monikey-inspection-reader, applications, get, "
+            "default/monikey-inspection-access, allow\n"
+            "g, fixture-user, proj:default:monikey-inspection-reader"
+        )
+        with self.assertRaises(verifier.VerificationFailure) as caught:
+            verifier.validate_composed_policy({"policy.csv": policy})
+        self.assertEqual(caught.exception.category, "RBAC_POLICY_UNSAFE")
 
     def test_malformed_or_ambiguous_fragment_records_are_rejected(self):
         for policy in ("p, broken", 'p, "unterminated', "g, user, role:reader, domain",

@@ -20,7 +20,7 @@ EXPECTED_PROJECT_POLICY = (
     "default/monikey-inspection-access, allow"
 )
 SUPPORTED_ACTIONS = frozenset({
-    "get", "create", "update", "delete", "sync", "override", "action", "invoke",
+    "get", "create", "update", "delete", "sync", "rollback", "override", "action", "invoke",
 })
 SUPPORTED_RESOURCES = frozenset({
     "clusters", "projects", "applications", "applicationsets", "repositories",
@@ -70,6 +70,9 @@ PERMISSION_CHECKS = [
     # This credential is scoped to one named Application; reject inherited
     # application-read access from global roles or policy.default.
     ("get", "applications", "*/*", "no"),
+    # Project reads can expose project destinations, source repositories, and
+    # role configuration; this identity has no project-read permission.
+    ("get", "projects", "*", "no"),
     ("create", "applications", APPLICATION_OBJECT, "no"),
     ("update", "applications", APPLICATION_OBJECT, "no"),
     ("delete", "applications", APPLICATION_OBJECT, "no"),
@@ -239,7 +242,7 @@ def parse_argocd_policy_line(line: str) -> list[str]:
     fields = []
     index = 0
     while True:
-        while index < len(line) and line[index] in " \t":
+        while index < len(line) and line[index] in GO_UNICODE_WHITESPACE:
             index += 1
 
         field = []
@@ -282,6 +285,7 @@ def parse_argocd_policy_line(line: str) -> list[str]:
 
 def validate_composed_policy(data: dict) -> None:
     inheritance = {}
+    has_authorized_permission = False
     try:
         # Argo CD v3.5.1 splits policy text into physical lines, trims each
         # line, and recognizes comments before passing the line to CSV parsing.
@@ -311,14 +315,14 @@ def validate_composed_policy(data: dict) -> None:
                 raise VerificationFailure("RBAC_POLICY_VALIDATION")
             if row[5] == "deny":
                 continue
-            # Conservatively reject mutation grants irrespective of global role
-            # membership. Wildcards and inherited roles cannot bypass this rule.
-            if action != "get":
+            # Only the dedicated identity may receive the one intended read.
+            # Scanning all fragments and rejecting other subjects prevents role
+            # mappings from transferring even this permission to other users.
+            if (action != "get" or resource != "applications"
+                    or row[4] != APPLICATION_OBJECT
+                    or row[1] != EXPECTED_USERNAME):
                 raise VerificationFailure("RBAC_POLICY_UNSAFE")
-            if fnmatch.fnmatchcase("applications", resource) and (
-                resource != "applications" or row[4] != APPLICATION_OBJECT
-            ):
-                raise VerificationFailure("RBAC_POLICY_UNSAFE")
+            has_authorized_permission = True
     except PolicyCSVError as error:
         raise VerificationFailure("RBAC_POLICY_VALIDATION") from error
     visiting, visited = set(), set()
@@ -334,6 +338,24 @@ def validate_composed_policy(data: dict) -> None:
         visited.add(subject)
     for subject in inheritance:
         visit(subject)
+    # A grouping edge into the authorized identity makes its permission
+    # available to the source identity, including through multi-hop chains.
+    def inherits_authorized_identity(subject):
+        pending, visited = [subject], set()
+        while pending:
+            current = pending.pop()
+            if current == EXPECTED_USERNAME:
+                return True
+            if current not in visited:
+                visited.add(current)
+                pending.extend(inheritance.get(current, ()))
+        return False
+
+    if has_authorized_permission and any(
+        subject != EXPECTED_USERNAME and inherits_authorized_identity(subject)
+        for subject in inheritance
+    ):
+        raise VerificationFailure("RBAC_POLICY_UNSAFE")
 
 
 def validate_project_policy(project: object) -> None:
