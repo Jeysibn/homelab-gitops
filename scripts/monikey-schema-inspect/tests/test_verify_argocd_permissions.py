@@ -360,10 +360,11 @@ class VerifyArgocdPermissionsDiagnosticTests(unittest.TestCase):
             "# ordinary comment": None,
             "   # whitespace-prefixed comment": None,
             '"#not-a-comment", ignored, columns': ["#not-a-comment", "ignored", "columns"],
+            "\x1c#not-a-comment": ["\x1c#not-a-comment"],
         }
         for line, expected_fields in inputs.items():
             with self.subTest(line=line):
-                trimmed = line.strip()
+                trimmed = verifier.trim_go_space(line)
                 upstream_fields = (
                     None if not trimmed or trimmed.startswith("#")
                     else next(csv.reader([trimmed], skipinitialspace=True, strict=True))
@@ -389,6 +390,11 @@ class VerifyArgocdPermissionsDiagnosticTests(unittest.TestCase):
             with self.subTest(key=key), self.assertRaises(verifier.VerificationFailure) as caught:
                 self.validate()
             self.assertEqual(caught.exception.category, "RBAC_POLICY_VALIDATION")
+
+        self.write_evidence(evidence_document("\x1c#not-a-comment"))
+        with self.assertRaises(verifier.VerificationFailure) as caught:
+            self.validate()
+        self.assertEqual(caught.exception.category, "RBAC_POLICY_VALIDATION")
 
         for key in ("policy..csv", "policy.extra.csv"):
             self.write_evidence(evidence_document(extra_data={key: 'p, "unterminated'}))

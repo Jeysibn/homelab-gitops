@@ -212,13 +212,25 @@ def compose_policy(data: dict) -> str:
     )
 
 
+def trim_go_space(value: str) -> str:
+    # Go strings.TrimSpace uses Unicode White_Space. Python additionally treats
+    # U+001C through U+001F as whitespace, but Go does not.
+    whitespace = lambda char: char.isspace() and char not in "\x1c\x1d\x1e\x1f"
+    start, end = 0, len(value)
+    while start < end and whitespace(value[start]):
+        start += 1
+    while end > start and whitespace(value[end - 1]):
+        end -= 1
+    return value[start:end]
+
+
 def validate_composed_policy(data: dict) -> None:
     inheritance = {}
     try:
         # Argo CD v3.5.1 splits policy text into physical lines, trims each
         # line, and recognizes comments before passing the line to CSV parsing.
         for raw_line in compose_policy(data).split("\n"):
-            line = raw_line.strip()
+            line = trim_go_space(raw_line)
             if not line or line.startswith("#"):
                 continue
             rows = list(csv.reader([line], skipinitialspace=True, strict=True))
