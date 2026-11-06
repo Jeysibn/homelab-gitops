@@ -197,6 +197,17 @@ class CaptureArgocdRbacEvidenceTests(unittest.TestCase):
                 self.assertEqual(capture.main(), 1)
             self.assertEqual(out.getvalue(), "::error::Argo CD RBAC evidence capture failed: OUTPUT_WRITE.\n")
 
+    def test_all_supported_fragments_are_preserved(self):
+        data = {"policy.github-actions.csv": "fixture", "policy.github-actions-project.csv": "other"}
+        self.assertEqual(capture.rbac_evidence(kubernetes_object("argocd-rbac-cm", data=data))["data"], data)
+
+    def test_resource_specific_diagnostics(self):
+        with self.assertRaisesRegex(capture.EvidenceError, "APP_PROJECT_VALIDATION"):
+            capture.project_evidence(kubernetes_object("wrong-name"))
+        for data in ({"policy..csv": ""}, {"policy.x.csv": None}, {"unrelated": ""}):
+            with self.assertRaisesRegex(capture.EvidenceError, "RBAC_CONFIGMAP_VALIDATION"):
+                capture.rbac_evidence(kubernetes_object("argocd-rbac-cm", data=data))
+
 
 if __name__ == "__main__":
     unittest.main()

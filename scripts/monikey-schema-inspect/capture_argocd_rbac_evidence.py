@@ -8,12 +8,14 @@ import json
 import os
 import subprocess
 import stat
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 
 
 ROLE_NAME = "monikey-inspection-reader"
 RBAC_DATA_KEYS = {"policy.csv", "policy.default", "policy.matchMode", "scopes"}
+POLICY_FRAGMENT_KEY = re.compile(r"policy\.[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*\.csv\Z")
 
 
 class EvidenceError(ValueError):
@@ -50,7 +52,7 @@ def project_evidence(document: dict) -> dict:
         or not isinstance(spec, dict)
         or not isinstance(spec.get("roles", []), list)
     ):
-        raise EvidenceError
+        raise EvidenceError("APP_PROJECT_VALIDATION")
     roles = [
         role for role in spec.get("roles", [])
         if isinstance(role, dict) and role.get("name") == ROLE_NAME
@@ -76,10 +78,10 @@ def rbac_evidence(document: dict) -> dict:
         or not metadata.get("uid")
         or not metadata.get("resourceVersion")
         or not isinstance(data, dict)
-        or set(data) - RBAC_DATA_KEYS
+        or any(key not in RBAC_DATA_KEYS and not POLICY_FRAGMENT_KEY.fullmatch(key) for key in data)
         or any(not isinstance(value, str) for value in data.values())
     ):
-        raise EvidenceError
+        raise EvidenceError("RBAC_CONFIGMAP_VALIDATION")
     return {
         "metadata": {
             "name": metadata["name"],

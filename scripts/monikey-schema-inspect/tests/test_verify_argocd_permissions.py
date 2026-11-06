@@ -270,6 +270,58 @@ class VerifyArgocdPermissionsDiagnosticTests(unittest.TestCase):
             self.validate()
         self.assertEqual(caught.exception.category, "RBAC_EVIDENCE_INVALID")
 
+    def test_composition_order_main_then_sorted_fragments(self):
+        data = {"policy.z.csv": "last", "policy.csv": "main", "policy.a.csv": "first"}
+        self.assertEqual(verifier.compose_policy(data), "main\nfirst\nlast")
+        self.assertEqual(verifier.compose_policy({"policy.a.csv": "only"}), "\nonly")
+
+    def test_supported_fragments_preserve_safe_records_and_role_inheritance(self):
+        data = {
+            "policy.github-actions.csv": "g, fixture-user, role:fixture",
+            "policy.github-actions-project.csv": "g, role:fixture, role:reader",
+            "policy.z.csv": "p, role:reader, applications, get, default/monikey-inspection-access, allow",
+        }
+        self.write_evidence(evidence_document(extra_data=data))
+        self.validate()
+        document = evidence_document(extra_data=data)
+        del document["configMap"]["data"]["policy.csv"]
+        self.write_evidence(document)
+        self.validate()
+
+    def test_invalid_keys_and_non_string_fragments_fail_closed(self):
+        for key, value in (("unrelated", ""), ("policy..csv", ""),
+                           ("policy.bad/.csv", ""), ("policy.fixture.csv", None)):
+            self.write_evidence(evidence_document(extra_data={key: value}))
+            with self.subTest(key=key), self.assertRaises(verifier.VerificationFailure):
+                self.validate()
+
+    def test_unsafe_fragment_cannot_hide_among_safe_fragments(self):
+        unsafe = [
+            "p, role:unrelated, applications, get, */*, allow",
+            "p, role:unrelated, applications, sync, default/other, allow",
+            "p, role:unrelated, applications, update/spec/replicas, *, allow",
+            "p, role:unrelated, applications, delete/*, *, allow",
+            "p, role:unrelated, applications, action/apps/Deployment/restart, *, allow",
+            "p, role:unrelated, *, *, *, allow",
+            "p, role:unrelated, app*, get, default/monikey-inspection-access, allow",
+            "g, role:fixture, role:admin",
+            "g, role:fixture, role:readonly",
+        ]
+        for policy in unsafe:
+            self.write_evidence(evidence_document(extra_data={"policy.a.csv": "g, user, role:fixture", "policy.z.csv": policy}))
+            with self.subTest(policy="withheld"), self.assertRaises(verifier.VerificationFailure) as caught:
+                self.validate()
+            self.assertEqual(caught.exception.category, "RBAC_EVIDENCE_UNSAFE")
+
+    def test_malformed_or_ambiguous_fragment_records_are_rejected(self):
+        for policy in ("p, broken", 'p, "unterminated', "g, user, role:reader, domain",
+                       "g, first, second\ng, second, first", "g, *, role:reader",
+                       "p, role:reader, applications, get, *, unknown"):
+            self.write_evidence(evidence_document(extra_data={"policy.bad.csv": policy}))
+            with self.subTest(policy="withheld"), self.assertRaises(verifier.VerificationFailure) as caught:
+                self.validate()
+            self.assertEqual(caught.exception.category, "RBAC_EVIDENCE_INVALID")
+
 
 if __name__ == "__main__":
     unittest.main()

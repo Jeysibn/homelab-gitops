@@ -10,6 +10,7 @@ import fnmatch
 import io
 import os
 import subprocess
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -28,6 +29,8 @@ SUPPORTED_RESOURCES = frozenset({
     "write-repositories", "certificates", "accounts", "gpgkeys", "logs", "exec", "extensions",
 })
 RBAC_EVIDENCE_MAX_AGE_SECONDS = 15 * 60
+
+POLICY_FRAGMENT_KEY = re.compile(r"policy\.[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*\.csv\Z")
 
 
 class VerificationFailure(ValueError):
@@ -171,7 +174,8 @@ def validate_rbac_evidence(
         or not metadata.get("uid")
         or not metadata.get("resourceVersion")
         or not isinstance(data, dict)
-        or set(data) - {"policy.csv", "policy.default", "policy.matchMode", "scopes"}
+        or any(key not in {"policy.csv", "policy.default", "policy.matchMode", "scopes"}
+               and not POLICY_FRAGMENT_KEY.fullmatch(key) for key in data)
         or any(not isinstance(value, str) for value in data.values())
         or data.get("policy.matchMode", "glob") != "glob"
         or not isinstance(data.get("policy.csv", ""), str)
@@ -183,29 +187,68 @@ def validate_rbac_evidence(
     if data.get("policy.default", "").strip():
         raise VerificationFailure("RBAC_EVIDENCE_UNSAFE")
 
+    validate_composed_policy(data)
+    return evidence
+
+
+def compose_policy(data: dict) -> str:
+    # Argo CD v3.5.1 PolicyCSV: main first, then overlay keys lexicographically.
+    return data.get("policy.csv", "") + "".join(
+        "\n" + data[key] for key in sorted(data) if POLICY_FRAGMENT_KEY.fullmatch(key)
+    )
+
+
+def validate_composed_policy(data: dict) -> None:
+    inheritance = {}
     try:
-        for row in csv.reader(io.StringIO(data.get("policy.csv", "")), skipinitialspace=True):
+        for row in csv.reader(io.StringIO(compose_policy(data)), skipinitialspace=True, strict=True):
             if not row or not any(field.strip() for field in row) or row[0].lstrip().startswith("#"):
                 continue
-            kind = row[0].strip()
-            if (kind == "p" and len(row) != 6) or (kind == "g" and len(row) not in {3, 4}):
+            row = [field.strip() for field in row]
+            if any(not field or "," in field or any(ord(char) < 32 for char in field) for field in row):
                 raise VerificationFailure("RBAC_EVIDENCE_INVALID")
-            if kind not in {"p", "g"}:
+            if row[0] == "g":
+                # The pinned model has a two-argument role relation, without domains.
+                if len(row) != 3 or any("*" in field for field in row):
+                    raise VerificationFailure("RBAC_EVIDENCE_INVALID")
+                if row[2] in {"role:admin", "role:readonly"}:
+                    raise VerificationFailure("RBAC_EVIDENCE_UNSAFE")
+                inheritance.setdefault(row[1], set()).add(row[2])
+                continue
+            if row[0] != "p" or len(row) != 6 or row[5] not in {"allow", "deny"}:
                 raise VerificationFailure("RBAC_EVIDENCE_INVALID")
-            if kind != "p" or row[5].strip().lower() != "allow":
+            resource, action = row[2:4]
+            if not re.fullmatch(r"[a-z*.-]+", resource) or not any(
+                fnmatch.fnmatchcase(candidate, resource) for candidate in SUPPORTED_RESOURCES
+            ) or not re.fullmatch(r"[A-Za-z0-9_/*.-]+", action):
+                raise VerificationFailure("RBAC_EVIDENCE_INVALID")
+            if action not in SUPPORTED_ACTIONS and not action.startswith(("update/", "delete/", "action/")) and "*" not in action:
+                raise VerificationFailure("RBAC_EVIDENCE_INVALID")
+            if row[5] == "deny":
                 continue
-            resource_pattern = row[2].strip()
-            action_pattern = row[3].strip().lower()
-            if not fnmatch.fnmatchcase("applications", resource_pattern):
-                continue
-            if action_pattern == "*" or action_pattern.startswith(("update/", "delete/", "action/")) or any(
-                fnmatch.fnmatchcase(f"{action}/__fine_grained_probe__", action_pattern)
-                for action in ("update", "delete", "action")
+            # Conservatively reject mutation grants irrespective of global role
+            # membership. Wildcards and inherited roles cannot bypass this rule.
+            if action != "get":
+                raise VerificationFailure("RBAC_EVIDENCE_UNSAFE")
+            if fnmatch.fnmatchcase("applications", resource) and (
+                resource != "applications" or row[4] != APPLICATION_OBJECT
             ):
                 raise VerificationFailure("RBAC_EVIDENCE_UNSAFE")
     except csv.Error as error:
         raise VerificationFailure("RBAC_EVIDENCE_INVALID") from error
-    return evidence
+    visiting, visited = set(), set()
+    def visit(subject):
+        if subject in visiting:
+            raise VerificationFailure("RBAC_EVIDENCE_INVALID")
+        if subject in visited:
+            return
+        visiting.add(subject)
+        for parent in inheritance.get(subject, ()):
+            visit(parent)
+        visiting.remove(subject)
+        visited.add(subject)
+    for subject in inheritance:
+        visit(subject)
 
 
 def validate_project_policy(project: object) -> None:
