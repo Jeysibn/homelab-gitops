@@ -1,0 +1,124 @@
+name: MoniKey schema adoption
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_sha:
+        description: Full MoniKey main commit SHA containing database/migrate.py
+        required: true
+        type: string
+      confirm_live_adoption:
+        description: Confirm this will inspect and record the live MoniKey schema
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: monikey-schema-adoption
+  cancel-in-progress: false
+
+jobs:
+  backup:
+    uses: ./.github/workflows/monikey-db-backup.yml
+    with:
+      confirm_live_backup: ${{ inputs.confirm_live_adoption }}
+    secrets: inherit
+
+  adopt:
+    needs: backup
+    if: github.ref == 'refs/heads/main' && inputs.confirm_live_adoption
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: monikey-adoption
+    env:
+      IMAGE_SHA: ${{ inputs.image_sha }}
+      KUBECONFIG_B64: ${{ secrets.MONIKEY_BACKUP_KUBECONFIG_B64 }}
+    steps:
+      - name: Validate release image and credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$IMAGE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "Expected a full 40-character SHA." >&2; exit 1; }
+          : "${KUBECONFIG_B64:?Set MONIKEY_BACKUP_KUBECONFIG_B64}"
+
+      - name: Connect to Tailscale
+        uses: tailscale/github-action@v2
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
+          args: --accept-routes
+
+      - name: Configure namespace-scoped Kubernetes access
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/kube"
+          printf '%s' "$KUBECONFIG_B64" | base64 --decode > "$RUNNER_TEMP/kube/config"
+          chmod 600 "$RUNNER_TEMP/kube/config"
+          echo "KUBECONFIG=$RUNNER_TEMP/kube/config" >> "$GITHUB_ENV"
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: v1.36.0
+
+      - name: Inspect and adopt the existing schema in Kubernetes
+        shell: bash
+        run: |
+          set -euo pipefail
+          kubectl auth can-i create jobs --namespace monikey --quiet
+          kubectl auth can-i get jobs --namespace monikey --quiet
+          kubectl auth can-i get pods/log --namespace monikey --quiet
+          job="monikey-schema-adoption-${GITHUB_RUN_ID}"
+          python3 - "$IMAGE_SHA" "$job" <<'PY' | kubectl create --filename -
+          import sys
+          sha, name = sys.argv[1:]
+          print(f'''apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: {name}
+            namespace: monikey
+          spec:
+            ttlSecondsAfterFinished: 86400
+            activeDeadlineSeconds: 600
+            backoffLimit: 0
+            template:
+              spec:
+                automountServiceAccountToken: false
+                restartPolicy: Never
+                containers:
+                  - name: adopt
+                    image: ghcr.io/jeysibn/monikey-v2-api:sha-{sha}
+                    imagePullPolicy: IfNotPresent
+                    command: ["python", "/app/database/migrate.py", "--adopt"]
+                    env:
+                      - name: DATABASE_URL
+                        valueFrom:
+                          secretKeyRef:
+                            name: monikey-db
+                            key: DATABASE_URL
+          ''')
+          PY
+          if ! kubectl wait --namespace monikey --for=condition=complete "job/$job" --timeout=10m; then
+            kubectl logs --namespace monikey --selector="job-name=$job" --all-containers=true || true
+            echo "Adoption failed; automatic migrations remain blocked." >&2
+            exit 1
+          fi
+          kubectl logs --namespace monikey --selector="job-name=$job" --all-containers=true
+          version="$(kubectl exec --namespace monikey postgres-0 -- \
+            psql -U monikey_app -d monikey_dev -At -c 'SELECT MAX(version) FROM schema_migrations')"
+          {
+            echo "## MoniKey schema adoption"
+            echo "- Backup and disposable restore check: succeeded before adoption"
+            echo "- Existing schema: verified and adopted through migration `$(printf '%03d' "$version")`"
+            echo "- SQL migrations executed by this adoption job: none"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove temporary credentials
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/kube/config"

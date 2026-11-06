@@ -8,6 +8,13 @@ on:
         required: true
         type: boolean
         default: false
+  workflow_call:
+    inputs:
+      confirm_live_backup:
+        description: Confirm that this run will read the live MoniKey database
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -19,7 +26,9 @@ concurrency:
 jobs:
   backup:
     name: Back up and verify MoniKey database
-    if: github.ref == 'refs/heads/main' && inputs.confirm_live_backup
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'repository_dispatch' || inputs.confirm_live_backup)
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
