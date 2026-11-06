@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import json
 import argparse
-import csv
 import fnmatch
 import os
 import subprocess
@@ -30,6 +29,9 @@ SUPPORTED_RESOURCES = frozenset({
 RBAC_EVIDENCE_MAX_AGE_SECONDS = 15 * 60
 
 CONFIGMAP_KEY = re.compile(r"[-._a-zA-Z0-9]+\Z")
+GO_UNICODE_WHITESPACE = frozenset(
+    "\t\n\v\f\r \u0085\u00a0\u1680\u2028\u2029\u202f\u205f\u3000"
+) | frozenset(chr(codepoint) for codepoint in range(0x2000, 0x200B))
 
 
 def valid_configmap_key(key: object) -> bool:
@@ -213,15 +215,69 @@ def compose_policy(data: dict) -> str:
 
 
 def trim_go_space(value: str) -> str:
-    # Go strings.TrimSpace uses Unicode White_Space. Python additionally treats
-    # U+001C through U+001F as whitespace, but Go does not.
-    whitespace = lambda char: char.isspace() and char not in "\x1c\x1d\x1e\x1f"
+    # Match unicode.IsSpace, which strings.TrimSpace uses in Go. Keep this
+    # explicit instead of relying on Python's Unicode database version.
     start, end = 0, len(value)
-    while start < end and whitespace(value[start]):
+    while start < end and value[start] in GO_UNICODE_WHITESPACE:
         start += 1
-    while end > start and whitespace(value[end - 1]):
+    while end > start and value[end - 1] in GO_UNICODE_WHITESPACE:
         end -= 1
     return value[start:end]
+
+
+class PolicyCSVError(ValueError):
+    """A malformed single physical policy line, matching Go encoding/csv."""
+
+
+def parse_argocd_policy_line(line: str) -> list[str]:
+    """Parse one already-trimmed physical line like Argo's Go CSV reader.
+
+    Argo constructs a fresh encoding/csv.Reader for each line, enables
+    TrimLeadingSpace, and leaves trailing and quoted-field whitespace intact.
+    This small parser implements that single-line dialect explicitly.
+    """
+    fields = []
+    index = 0
+    while True:
+        while index < len(line) and line[index] in " \t":
+            index += 1
+
+        field = []
+        if index < len(line) and line[index] == '"':
+            index += 1
+            while True:
+                if index >= len(line):
+                    raise PolicyCSVError("unterminated quoted field")
+                char = line[index]
+                if char != '"':
+                    field.append(char)
+                    index += 1
+                    continue
+                if index + 1 < len(line) and line[index + 1] == '"':
+                    field.append('"')
+                    index += 2
+                    continue
+                index += 1
+                if index < len(line) and line[index] != ",":
+                    raise PolicyCSVError("unexpected data after quoted field")
+                break
+        else:
+            while index < len(line) and line[index] != ",":
+                if line[index] == '"':
+                    raise PolicyCSVError("quote in unquoted field")
+                field.append(line[index])
+                index += 1
+
+        fields.append("".join(field))
+        if index >= len(line):
+            return fields
+        # The only remaining character accepted after a field is its delimiter.
+        if line[index] != ",":
+            raise PolicyCSVError("unexpected CSV character")
+        index += 1
+        if index == len(line):
+            fields.append("")
+            return fields
 
 
 def validate_composed_policy(data: dict) -> None:
@@ -233,14 +289,8 @@ def validate_composed_policy(data: dict) -> None:
             line = trim_go_space(raw_line)
             if not line or line.startswith("#"):
                 continue
-            rows = list(csv.reader([line], skipinitialspace=True, strict=True))
-            if len(rows) != 1:
-                raise VerificationFailure("RBAC_POLICY_VALIDATION")
-            row = rows[0]
-            if not row or not any(field.strip() for field in row):
-                continue
-            row = [field.strip() for field in row]
-            if any(not field or "," in field or any(ord(char) < 32 for char in field) for field in row):
+            row = parse_argocd_policy_line(line)
+            if any(not field or any(ord(char) < 32 for char in field) for field in row):
                 raise VerificationFailure("RBAC_POLICY_VALIDATION")
             if row[0] == "g":
                 # The pinned model has a two-argument role relation, without domains.
@@ -269,7 +319,7 @@ def validate_composed_policy(data: dict) -> None:
                 resource != "applications" or row[4] != APPLICATION_OBJECT
             ):
                 raise VerificationFailure("RBAC_POLICY_UNSAFE")
-    except csv.Error as error:
+    except PolicyCSVError as error:
         raise VerificationFailure("RBAC_POLICY_VALIDATION") from error
     visiting, visited = set(), set()
     def visit(subject):

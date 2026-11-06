@@ -1,4 +1,3 @@
-import csv
 import importlib.util
 import json
 import subprocess
@@ -355,7 +354,8 @@ class VerifyArgocdPermissionsDiagnosticTests(unittest.TestCase):
         self.assertEqual(caught.exception.category, "RBAC_POLICY_UNSAFE")
 
     def test_comment_recognition_matches_v351_raw_physical_line_behavior(self):
-        # Argo CD trims each physical line and checks its raw prefix before CSV parsing.
+        # Expected results are derived from Argo's LoadPolicy and loadPolicyLine:
+        # trim the physical line, skip raw comments, then parse one CSV record.
         inputs = {
             "# ordinary comment": None,
             "   # whitespace-prefixed comment": None,
@@ -365,11 +365,11 @@ class VerifyArgocdPermissionsDiagnosticTests(unittest.TestCase):
         for line, expected_fields in inputs.items():
             with self.subTest(line=line):
                 trimmed = verifier.trim_go_space(line)
-                upstream_fields = (
+                parsed_fields = (
                     None if not trimmed or trimmed.startswith("#")
-                    else next(csv.reader([trimmed], skipinitialspace=True, strict=True))
+                    else verifier.parse_argocd_policy_line(trimmed)
                 )
-                self.assertEqual(upstream_fields, expected_fields)
+                self.assertEqual(parsed_fields, expected_fields)
 
         for policy in (
             '# regular comment\np, role:reader, applications, get, '
@@ -401,6 +401,84 @@ class VerifyArgocdPermissionsDiagnosticTests(unittest.TestCase):
             with self.subTest(key=key), self.assertRaises(verifier.VerificationFailure) as caught:
                 self.validate()
             self.assertEqual(caught.exception.category, "RBAC_POLICY_VALIDATION")
+
+    def test_v351_csv_field_whitespace_quoting_and_escaping(self):
+        cases = {
+            'p,\trole:reader, applications, get, default/monikey-inspection-access, allow': [
+                "p", "role:reader", "applications", "get",
+                "default/monikey-inspection-access", "allow",
+            ],
+            'p, " role:reader ", applications, get, default/monikey-inspection-access, allow': [
+                "p", " role:reader ", "applications", "get",
+                "default/monikey-inspection-access", "allow",
+            ],
+            'p,\t"role:reader", applications, get, default/monikey-inspection-access, allow': [
+                "p", "role:reader", "applications", "get",
+                "default/monikey-inspection-access", "allow",
+            ],
+            'p,\u00a0role:reader, applications, get, default/monikey-inspection-access, allow': [
+                "p", "\u00a0role:reader", "applications", "get",
+                "default/monikey-inspection-access", "allow",
+            ],
+            'p, role:reader , applications, get, default/monikey-inspection-access, allow': [
+                "p", "role:reader ", "applications", "get",
+                "default/monikey-inspection-access", "allow",
+            ],
+            'p, "role:""reader""", applications, get, "default/app,one", allow': [
+                "p", 'role:"reader"', "applications", "get", "default/app,one", "allow",
+            ],
+            'p, role:reader, applications, get, default/monikey-inspection-access, allow': [
+                "p", "role:reader", "applications", "get",
+                "default/monikey-inspection-access", "allow",
+            ],
+        }
+        for line, expected in cases.items():
+            with self.subTest(line=line):
+                self.assertEqual(verifier.parse_argocd_policy_line(line), expected)
+
+        for malformed in (
+            'p, role:reader, applications, get, "default/name, allow',
+            'p, "role:reader"suffix, applications, get, default/name, allow',
+            'p, role:"reader", applications, get, default/name, allow',
+        ):
+            with self.subTest(malformed=malformed), self.assertRaises(verifier.PolicyCSVError):
+                verifier.parse_argocd_policy_line(malformed)
+
+        verifier.validate_composed_policy({
+            "policy.csv": (
+                'p, "role,reader", applications, get, '
+                "default/monikey-inspection-access, allow"
+            ),
+        })
+        with self.assertRaises(verifier.VerificationFailure) as invalid_type:
+            verifier.validate_composed_policy({
+                "policy.csv": (
+                    "p , role:reader, applications, get, "
+                    "default/monikey-inspection-access, allow"
+                ),
+            })
+        self.assertEqual(invalid_type.exception.category, "RBAC_POLICY_VALIDATION")
+
+    def test_only_empty_physical_lines_are_skipped(self):
+        valid = "p, role:reader, applications, get, default/monikey-inspection-access, allow"
+        self.write_evidence(evidence_document("\n  \t\u00a0\n" + valid + "\r\n"))
+        self.validate()
+
+        malformed = (",,", ",,,,,", '""', '""""', '""","""', " , \t, ")
+        for record in malformed:
+            self.write_evidence(evidence_document(record))
+            with self.subTest(record=record), self.assertRaises(verifier.VerificationFailure) as caught:
+                self.validate()
+            self.assertEqual(caught.exception.category, "RBAC_POLICY_VALIDATION")
+
+        for key in ("policy..csv", "policy.extra.csv"):
+            for record in malformed:
+                self.write_evidence(evidence_document(extra_data={key: record}))
+                with self.subTest(key=key, record=record), self.assertRaises(
+                    verifier.VerificationFailure
+                ) as caught:
+                    self.validate()
+                self.assertEqual(caught.exception.category, "RBAC_POLICY_VALIDATION")
 
     def test_multiline_quoted_record_is_rejected_per_upstream_physical_line_parser(self):
         policy = 'p, role:reader, applications, get, "default/\nmonikey-inspection-access", allow'
