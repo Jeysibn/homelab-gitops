@@ -210,6 +210,7 @@ class ArgoApplicationAuditTests(unittest.TestCase):
         self.addCleanup(directory.cleanup)
         evidence_path = Path(directory.name) / "evidence.json"
         evidence_path.write_text(json.dumps({
+                "schemaVersion": 2,
                 "capturedAt": datetime.now(timezone.utc).isoformat(),
                 "cluster": {"context": "default", "apiServer": "https://127.0.0.1:6443"},
                 "appProject": {
@@ -244,10 +245,11 @@ class ArgoApplicationAuditTests(unittest.TestCase):
                 return subprocess.CompletedProcess(command, 0, stdout=output, stderr="")
 
         runner = FakeRunner()
-        permission_audit.verify(
-            "argocd", runner, rbac_evidence_file=str(evidence_path),
-            expected_context="default", expected_api_server="https://127.0.0.1:6443",
-        )
+        with self.assertRaisesRegex(ValueError, "RBAC_IMPLICIT_PROJECT_READ_BLOCKER"):
+            permission_audit.verify(
+                "argocd", runner, rbac_evidence_file=str(evidence_path),
+                expected_context="default", expected_api_server="https://127.0.0.1:6443",
+            )
         self.assertEqual(len(runner.commands), len(permission_audit.PERMISSION_CHECKS) + 1)
         self.assertEqual(runner.commands[1][3:6], ["get", "applications", "default/monikey-inspection-access"])
 

@@ -8,12 +8,26 @@ import json
 import os
 import subprocess
 import stat
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 
 
-ROLE_NAME = "monikey-inspection-reader"
 RBAC_DATA_KEYS = {"policy.csv", "policy.default", "policy.matchMode", "scopes"}
+CONFIGMAP_KEY = re.compile(r"[-._a-zA-Z0-9]+\Z")
+
+
+def valid_configmap_key(key: object) -> bool:
+    return isinstance(key, str) and len(key) <= 253 and CONFIGMAP_KEY.fullmatch(key) is not None
+
+
+def is_policy_fragment_key(key: object) -> bool:
+    return (
+        isinstance(key, str)
+        and key.startswith("policy.")
+        and key.endswith(".csv")
+        and key != "policy.csv"
+    )
 
 
 class EvidenceError(ValueError):
@@ -50,11 +64,13 @@ def project_evidence(document: dict) -> dict:
         or not isinstance(spec, dict)
         or not isinstance(spec.get("roles", []), list)
     ):
-        raise EvidenceError
-    roles = [
-        role for role in spec.get("roles", [])
-        if isinstance(role, dict) and role.get("name") == ROLE_NAME
-    ]
+        raise EvidenceError("APP_PROJECT_VALIDATION")
+    # Retain the complete authorization collection, but never JWT metadata.
+    roles = []
+    for role in spec.get("roles", []):
+        if not isinstance(role, dict):
+            raise EvidenceError("APP_PROJECT_VALIDATION")
+        roles.append({key: role[key] for key in ("name", "policies", "groups") if key in role})
     return {
         "metadata": {
             "name": metadata["name"],
@@ -76,10 +92,11 @@ def rbac_evidence(document: dict) -> dict:
         or not metadata.get("uid")
         or not metadata.get("resourceVersion")
         or not isinstance(data, dict)
-        or set(data) - RBAC_DATA_KEYS
+        or any(not valid_configmap_key(key) for key in data)
+        or any(key not in RBAC_DATA_KEYS and not is_policy_fragment_key(key) for key in data)
         or any(not isinstance(value, str) for value in data.values())
     ):
-        raise EvidenceError
+        raise EvidenceError("RBAC_CONFIGMAP_VALIDATION")
     return {
         "metadata": {
             "name": metadata["name"],
@@ -87,7 +104,7 @@ def rbac_evidence(document: dict) -> dict:
             "uid": metadata["uid"],
             "resourceVersion": metadata["resourceVersion"],
         },
-        "data": data,
+        "data": dict(sorted(data.items())),
     }
 
 
@@ -159,6 +176,7 @@ def capture(context: str, api_server: str, output: Path, run=subprocess.run) -> 
          "configmap", "argocd-rbac-cm", "--namespace", "argocd", "-o", "json"], run, stage="RBAC_CONFIGMAP_READ"
     )
     evidence = {
+        "schemaVersion": 2,
         "capturedAt": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "cluster": {"context": context, "apiServer": api_server},
         "appProject": project_evidence(project),

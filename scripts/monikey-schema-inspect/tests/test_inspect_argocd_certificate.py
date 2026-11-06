@@ -297,6 +297,7 @@ class ArgoCertificateDiagnosticTests(unittest.TestCase):
             trust_file.write_text("fixture certificate")
             rbac_evidence = Path(directory) / "rbac-evidence.json"
             rbac_evidence.write_text(json.dumps({
+                "schemaVersion": 2,
                 "capturedAt": datetime.now(timezone.utc).isoformat(),
                 "cluster": {"context": "default", "apiServer": "https://127.0.0.1:6443"},
                 "appProject": {
@@ -312,10 +313,11 @@ class ArgoCertificateDiagnosticTests(unittest.TestCase):
                     "data": {"policy.csv": ""},
                 },
             }))
-            verifier.verify(
-                run=runner, server_crt=str(trust_file), rbac_evidence_file=str(rbac_evidence),
-                expected_context="default", expected_api_server="https://127.0.0.1:6443",
-            )
+            with self.assertRaisesRegex(ValueError, "RBAC_IMPLICIT_PROJECT_READ_BLOCKER"):
+                verifier.verify(
+                    run=runner, server_crt=str(trust_file), rbac_evidence_file=str(rbac_evidence),
+                    expected_context="default", expected_api_server="https://127.0.0.1:6443",
+                )
         self.assertTrue(calls)
         self.assertTrue(all(
             command[1:3] == ["--server-crt", str(trust_file)]
