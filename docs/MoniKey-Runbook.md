@@ -9,10 +9,10 @@ uses HTTPS only; the app is not served over plain HTTP.
 ## First deployment
 
 The `monikey` Argo CD Application creates the namespace and deploys the frontend,
-API, and one PostgreSQL StatefulSet. GHCR images are public and pinned to full
-commit SHA tags. The app and database Services are ClusterIP; only Traefik
-accepts connections from the LAN. The API Service is named `backend` to match
-the hostname used by the Nginx configuration in the frontend image.
+API, and one PostgreSQL StatefulSet. GHCR images are pinned to the same full
+commit SHA. The app and database Services are ClusterIP; only Traefik accepts
+connections from the LAN. The API Service is named `backend` to match the
+hostname used by the Nginx configuration in the frontend image.
 
 Create the runtime Secret on the cluster before merging the Argo CD Application.
 Keep its password in a password manager or a private file outside Git. The
@@ -37,31 +37,32 @@ commit the file or paste its contents into logs, tickets, or chat. Kubernetes
 Secrets are not encrypted by base64 encoding; access is limited to cluster
 administrators and the MoniKey pods.
 
-The ConfigMap `monikey-db-init` mirrors the canonical scripts in the MoniKey
-repository. PostgreSQL runs them only when the Longhorn-backed volume is empty.
-Keep both copies in sync when changing the initial schema or seed. Never delete
-the PVC to rerun initialization or to repair an Argo CD diff.
+PostgreSQL has no schema init ConfigMap. On a genuinely empty database, the
+versioned migration Job initializes the schema and seed after PostgreSQL is
+ready. Never delete the PVC to rerun initialization or to repair an Argo CD diff.
 
 ## Schema migrations
 
-For each numbered migration, first take and verify a logical backup using the
-procedure below. Then merge the reviewed GitOps change. Argo CD runs migration
-Jobs as PreSync hooks before applying the application Deployments. The SQL is
-mirrored from MoniKey's canonical migration; a failed Job stops the sync so the
-new API image is not rolled out. Migrations 002 and 003 run in order on every
-sync: 002 creates the transfer table, then 003 removes the old nonnegative
-baseline constraints needed for current-amount corrections. Both migrations
-are idempotent and safely do nothing when their changes are already present.
+Use the automated release workflow in `homelab-gitops` for normal releases. It
+reuses the backup workflow below, waits for its restore check, then promotes the
+matching immutable frontend/API SHA tags. Argo CD applies the migration Job
+before the application Deployments. It reads MoniKey's canonical migration
+files from that SHA's API image, takes a PostgreSQL advisory lock, and records
+versions and checksums in `schema_migrations`. A failed migration blocks the
+API/frontend rollout. No live SQL is run from a shell on the homelab machine.
 
-This removes the manual `kubectl` step for applying migrations. The backup and
-restore-check procedure remains manual because no protected off-cluster backup
-destination is configured for automation. For migration 003, create and verify
-the backup before merging the GitOps change; the merge triggers the PreSync Job
-through the existing automated Argo CD sync policy.
+Before enabling automatic promotion for the first time, run **Actions → MoniKey
+schema adoption** on `main` with a full MoniKey image SHA. The workflow creates
+and restore-verifies a backup first, then waits for approval in the protected
+`monikey-adoption` environment. Its Kubernetes Job verifies a known complete
+schema and records the checksums for migrations already present without running
+SQL migrations. If the live schema is partial, unknown, or does not match the
+expected inventory, adoption stops. Only after its success should
+`MONIKEY_GITOPS_AUTOMATION_ENABLED=true` be set in MoniKey repository variables.
 
-Do not delete the PostgreSQL PVC to apply schema changes. A fresh empty database
-gets the current schema from `monikey-db-init`; existing databases get numbered
-forward migrations through the Argo CD hook.
+Do not delete the PostgreSQL PVC to apply schema changes. Empty databases are
+initialized by the same migration Job; existing databases require the one-time
+adoption before the numbered forward migrations can run.
 
 ## Verify the deployment
 
@@ -87,12 +88,12 @@ kubectl exec -n monikey postgres-0 -- \
 ```
 
 For a manual GitHub Actions backup, open **Actions → MoniKey database backup →
-Run workflow** on `main` and confirm the live backup input. The workflow restores
-the dump into a disposable PostgreSQL container before encrypting it and
-uploading a seven-day artifact. Download the encrypted `.gpg` artifact and move
-it to owner-controlled encrypted storage; the artifact is temporary transport,
-not long-term backup retention. Decrypt it with the passphrase stored outside
-GitHub and Git.
+Run workflow** on `main` and confirm the live backup input. The same workflow
+runs automatically before every promotion. It restores the dump into a
+disposable PostgreSQL container before encrypting it and uploading a seven-day
+artifact. Download the encrypted `.gpg` artifact and move it to owner-controlled
+encrypted storage; the artifact is temporary transport, not long-term backup
+retention. Decrypt it with the passphrase stored outside GitHub and Git.
 
 The workflow requires these GitHub Actions repository secrets:
 
@@ -140,8 +141,9 @@ any restore that replaces existing records.
 
 ## Rollback
 
-To roll back an application image, restore the previous full SHA tag in
-`kubernetes/platform/monikey/manifests/application.yaml` and merge that reviewed
-Git change. Argo CD will roll the Deployment back. The database schema and PVC
-are not rolled back with the images; take a logical backup before schema changes
-and do not run an older API against a schema it cannot read.
+To roll back an application image, set both API and frontend to the same previous
+full SHA in `kubernetes/platform/monikey/manifests/application.yaml` and merge
+that Git change. Leave `migration.yaml` on the newest runner image so it
+understands the current ledger. Argo CD runs the migration check and rolls the
+Deployments back. The database schema and PVC are not rolled back with the
+images; use only an API known to support the current schema.

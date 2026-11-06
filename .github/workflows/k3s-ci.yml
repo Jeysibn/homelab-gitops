@@ -100,6 +100,13 @@ jobs:
           curl -sSL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz | tar xz
           sudo mv kubeconform /usr/local/bin/
 
+      - name: Render MoniKey migration Job template
+        run: |
+          sed -e 's/__IMAGE_SHA__/0000000000000000000000000000000000000000/g' \
+            -e 's/__RUN_ID__/offline-validation/g' \
+            kubernetes/platform/monikey/automation/migration-job.yaml \
+            > rendered-monikey-migration.yaml
+
       - name: Validate Kubernetes manifests
         run: |
           mapfile -d '' platform_manifests < <(
@@ -113,4 +120,5 @@ jobs:
             kubernetes/manifests/ \
             kubernetes/applications/ \
             "${platform_manifests[@]}" \
+            rendered-monikey-migration.yaml \
             rendered-manifests.yaml

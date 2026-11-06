@@ -13,8 +13,11 @@ metadata:
   namespace: monikey
 rules:
   - apiGroups: [""]
-    resources: ["pods"]
+    resources: ["pods", "pods/log"]
     verbs: ["get"]
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "get"]
   - apiGroups: [""]
     resources: ["pods/exec"]
     resourceNames: ["postgres-0"]

@@ -1,0 +1,157 @@
+name: MoniKey release
+run-name: MoniKey release ${{ github.event.client_payload.sha }}
+
+on:
+  repository_dispatch:
+    types: [monikey_release]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: monikey-release
+  cancel-in-progress: false
+
+jobs:
+  backup:
+    uses: ./.github/workflows/monikey-db-backup.yml
+    secrets: inherit
+
+  promote-and-verify:
+    needs: backup
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      IMAGE_SHA: ${{ github.event.client_payload.sha }}
+      RELEASE_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
+      KUBECONFIG_B64: ${{ secrets.MONIKEY_BACKUP_KUBECONFIG_B64 }}
+    steps:
+      - name: Validate release SHA
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$IMAGE_SHA" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "Expected a full 40-character MoniKey commit SHA." >&2
+            exit 1
+          }
+          : "${KUBECONFIG_B64:?Set MONIKEY_BACKUP_KUBECONFIG_B64}"
+
+      - uses: actions/checkout@v6
+        with:
+          ref: main
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Connect to Tailscale
+        uses: tailscale/github-action@v2
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
+          args: --accept-routes
+
+      - name: Configure namespace-scoped Kubernetes access
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/kube"
+          printf '%s' "$KUBECONFIG_B64" | base64 --decode > "$RUNNER_TEMP/kube/config"
+          chmod 600 "$RUNNER_TEMP/kube/config"
+          echo "KUBECONFIG=$RUNNER_TEMP/kube/config" >> "$GITHUB_ENV"
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: v1.36.0
+
+      - name: Check namespace access before promotion
+        shell: bash
+        run: |
+          set -euo pipefail
+          kubectl auth can-i get jobs --namespace monikey --quiet
+          kubectl auth can-i get pods --namespace monikey --quiet
+          kubectl auth can-i get pods/log --namespace monikey --quiet
+          kubectl auth can-i get pods/postgres-0 --subresource=exec --namespace monikey --quiet
+
+      - name: Promote matching image tags
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          sha = os.environ["IMAGE_SHA"]
+          app = Path("kubernetes/platform/monikey/manifests/application.yaml")
+          job_template = Path("kubernetes/platform/monikey/automation/migration-job.yaml")
+          job = Path("kubernetes/platform/monikey/manifests/migration.yaml")
+          app_text = app.read_text()
+          for component in ("api", "frontend"):
+              image = f"ghcr.io/jeysibn/monikey-v2-{component}:sha-"
+              lines = [line for line in app_text.splitlines() if image in line]
+              if len(lines) != 1:
+                  raise SystemExit(f"Expected exactly one {component} image in application.yaml")
+              app_text = app_text.replace(lines[0], lines[0].split(image)[0] + image + sha)
+          template = job_template.read_text()
+          if template.count("__IMAGE_SHA__") != 2 or template.count("__RUN_ID__") != 1:
+            raise SystemExit("Migration job template must contain two SHA and one run-id placeholder")
+          app.write_text(app_text)
+          job.write_text(template.replace("__IMAGE_SHA__", sha).replace("__RUN_ID__", os.environ["RELEASE_RUN_ID"]))
+          PY
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add kubernetes/platform/monikey/manifests/application.yaml \
+            kubernetes/platform/monikey/manifests/migration.yaml
+          git commit -m "chore(monikey): promote sha-$IMAGE_SHA"
+          git push origin HEAD:main
+
+      - name: Wait for migration hook
+        shell: bash
+        run: |
+          set -euo pipefail
+          deadline=$((SECONDS + 900))
+          while (( SECONDS < deadline )); do
+            job_json="$(kubectl get job monikey-db-migrate --namespace monikey --output=json 2>/dev/null || true)"
+            if [[ -n "$job_json" ]]; then
+              job_sha="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["spec"]["template"]["metadata"]["annotations"]["monikey.jeysibn.io/release-sha"])' <<< "$job_json")"
+              [[ "$job_sha" == "$IMAGE_SHA" ]] || { sleep 10; continue; }
+              complete="$(python3 -c 'import json,sys; d=json.load(sys.stdin); print(any(c["type"] == "Complete" and c["status"] == "True" for c in d.get("status",{}).get("conditions",[])))' <<< "$job_json")"
+              failed="$(python3 -c 'import json,sys; d=json.load(sys.stdin); print(any(c["type"] == "Failed" and c["status"] == "True" for c in d.get("status",{}).get("conditions",[])))' <<< "$job_json")"
+              if [[ "$failed" == true ]]; then
+                kubectl logs --namespace monikey --selector=job-name=monikey-db-migrate --all-containers=true || true
+                echo "Database migration failed; Argo CD has not rolled out the application." >&2
+                exit 1
+              fi
+              [[ "$complete" == true ]] && break
+            fi
+            sleep 10
+          done
+          [[ "${complete:-false}" == true ]] || { echo "Timed out waiting for Argo CD's migration hook." >&2; exit 1; }
+
+      - name: Verify deployment and report release
+        shell: bash
+        run: |
+          set -euo pipefail
+          kubectl rollout status deployment/api --namespace monikey --timeout=5m
+          kubectl rollout status deployment/frontend --namespace monikey --timeout=5m
+          api_image="$(kubectl get deployment api --namespace monikey -o jsonpath='{.spec.template.spec.containers[0].image}')"
+          frontend_image="$(kubectl get deployment frontend --namespace monikey -o jsonpath='{.spec.template.spec.containers[0].image}')"
+          [[ "$api_image" == "ghcr.io/jeysibn/monikey-v2-api:sha-$IMAGE_SHA" ]]
+          [[ "$frontend_image" == "ghcr.io/jeysibn/monikey-v2-frontend:sha-$IMAGE_SHA" ]]
+          curl --fail --silent --show-error --insecure --retry 12 --retry-delay 5 \
+            https://monikey.homelab.local/api/health/ready > /dev/null
+          migration_version="$(kubectl exec --namespace monikey postgres-0 -- \
+            psql -U monikey_app -d monikey_dev -At -c 'SELECT MAX(version) FROM schema_migrations')"
+          {
+            echo "## MoniKey deployment"
+            echo "- Deployed SHA: `$IMAGE_SHA`"
+            echo "- Database migration version: `$(printf '%03d' "$migration_version")`"
+            echo "- Argo CD migration hook: succeeded"
+            echo "- API and frontend rollouts: succeeded with matching SHA tags"
+            echo "- Private readiness endpoint: `/api/health/ready` passed"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove temporary credentials
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/kube/config"
