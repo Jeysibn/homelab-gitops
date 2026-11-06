@@ -89,7 +89,7 @@ def rbac_evidence(document: dict) -> dict:
             "uid": metadata["uid"],
             "resourceVersion": metadata["resourceVersion"],
         },
-        "data": data,
+        "data": dict(sorted(data.items())),
     }
 
 

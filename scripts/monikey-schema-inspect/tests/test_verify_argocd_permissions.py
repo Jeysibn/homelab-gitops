@@ -197,7 +197,7 @@ class VerifyArgocdPermissionsDiagnosticTests(unittest.TestCase):
                 self.write_evidence(document)
                 with self.assertRaises(verifier.VerificationFailure) as caught:
                     self.validate()
-                self.assertEqual(caught.exception.category, "RBAC_EVIDENCE_UNSAFE")
+                self.assertEqual(caught.exception.category, "RBAC_POLICY_UNSAFE")
 
     def test_project_role_extra_policy_or_group_blocks_verification(self):
         cases = (
@@ -211,13 +211,13 @@ class VerifyArgocdPermissionsDiagnosticTests(unittest.TestCase):
                 self.write_evidence(evidence_document(project_roles=[role]))
                 with self.assertRaises(verifier.VerificationFailure) as caught:
                     self.validate()
-                self.assertEqual(caught.exception.category, "RBAC_EVIDENCE_INVALID")
+                self.assertEqual(caught.exception.category, "APP_PROJECT_VALIDATION")
 
         duplicate = cases[1]
         self.write_evidence(evidence_document(project_roles=[duplicate, duplicate]))
         with self.assertRaises(verifier.VerificationFailure) as caught:
             self.validate()
-        self.assertEqual(caught.exception.category, "RBAC_EVIDENCE_INVALID")
+        self.assertEqual(caught.exception.category, "APP_PROJECT_VALIDATION")
 
     def test_missing_stale_and_malformed_global_evidence_fail_closed(self):
         with self.assertRaises(verifier.VerificationFailure) as missing:
@@ -240,7 +240,7 @@ class VerifyArgocdPermissionsDiagnosticTests(unittest.TestCase):
         self.write_evidence(malformed)
         with self.assertRaises(verifier.VerificationFailure) as invalid:
             self.validate()
-        self.assertEqual(invalid.exception.category, "RBAC_EVIDENCE_INVALID")
+        self.assertEqual(invalid.exception.category, "RBAC_POLICY_VALIDATION")
 
     def test_group_claims_and_non_glob_policy_mode_fail_closed(self):
         with self.assertRaises(verifier.VerificationFailure) as caught:
@@ -250,17 +250,17 @@ class VerifyArgocdPermissionsDiagnosticTests(unittest.TestCase):
         self.write_evidence(evidence_document(extra_data={"policy.matchMode": "regex"}))
         with self.assertRaises(verifier.VerificationFailure) as invalid:
             self.validate()
-        self.assertEqual(invalid.exception.category, "RBAC_EVIDENCE_INVALID")
+        self.assertEqual(invalid.exception.category, "RBAC_CONFIGMAP_VALIDATION")
 
         self.write_evidence(evidence_document(extra_data={"policy.default": "role:admin"}))
         with self.assertRaises(verifier.VerificationFailure) as unsafe:
             self.validate()
-        self.assertEqual(unsafe.exception.category, "RBAC_EVIDENCE_UNSAFE")
+        self.assertEqual(unsafe.exception.category, "RBAC_POLICY_UNSAFE")
 
         self.write_evidence(evidence_document(extra_data={"policy.default": "role:readonly"}))
         with self.assertRaises(verifier.VerificationFailure) as broad_read:
             self.validate()
-        self.assertEqual(broad_read.exception.category, "RBAC_EVIDENCE_UNSAFE")
+        self.assertEqual(broad_read.exception.category, "RBAC_POLICY_UNSAFE")
 
     def test_evidence_must_match_approved_cluster_identity(self):
         document = evidence_document()
@@ -274,6 +274,21 @@ class VerifyArgocdPermissionsDiagnosticTests(unittest.TestCase):
         data = {"policy.z.csv": "last", "policy.csv": "main", "policy.a.csv": "first"}
         self.assertEqual(verifier.compose_policy(data), "main\nfirst\nlast")
         self.assertEqual(verifier.compose_policy({"policy.a.csv": "only"}), "\nonly")
+
+    def test_standard_policy_and_live_permission_probes_accept_valid_evidence(self):
+        self.write_evidence(evidence_document(
+            "p, role:inspection, applications, get, default/monikey-inspection-access, allow"
+        ))
+        calls = []
+        base_runner = runner_for()
+
+        def recording_runner(command, **kwargs):
+            calls.append(command)
+            return base_runner(command, **kwargs)
+
+        self.verify(recording_runner)
+        self.assertEqual(sum("can-i" in command for command in calls), len(verifier.PERMISSION_CHECKS))
+        self.assertEqual(sum("get-user-info" in command for command in calls), 1)
 
     def test_supported_fragments_preserve_safe_records_and_role_inheritance(self):
         data = {
@@ -295,6 +310,32 @@ class VerifyArgocdPermissionsDiagnosticTests(unittest.TestCase):
             with self.subTest(key=key), self.assertRaises(verifier.VerificationFailure):
                 self.validate()
 
+    def test_failure_categories_separate_project_configmap_policy_and_probe(self):
+        document = evidence_document()
+        document["appProject"]["metadata"]["name"] = "other"
+        self.write_evidence(document)
+        with self.assertRaises(verifier.VerificationFailure) as project:
+            self.validate()
+        self.assertEqual(project.exception.category, "APP_PROJECT_VALIDATION")
+
+        self.write_evidence(evidence_document(extra_data={"unsupported": "value"}))
+        with self.assertRaises(verifier.VerificationFailure) as config_map:
+            self.validate()
+        self.assertEqual(config_map.exception.category, "RBAC_CONFIGMAP_VALIDATION")
+
+        self.write_evidence(evidence_document("p, malformed"))
+        with self.assertRaises(verifier.VerificationFailure) as policy:
+            self.validate()
+        self.assertEqual(policy.exception.category, "RBAC_POLICY_VALIDATION")
+
+        self.write_evidence(evidence_document())
+        with self.assertRaises(verifier.VerificationFailure) as probe:
+            self.verify(runner_for(permission_values={
+                verifier.PERMISSION_CHECKS[0][:3]: "no",
+            }))
+        self.assertEqual(probe.exception.category, "REQUIRED_PERMISSION_DENIED")
+        self.assertEqual(probe.exception.check_number, 1)
+
     def test_unsafe_fragment_cannot_hide_among_safe_fragments(self):
         unsafe = [
             "p, role:unrelated, applications, get, */*, allow",
@@ -311,7 +352,7 @@ class VerifyArgocdPermissionsDiagnosticTests(unittest.TestCase):
             self.write_evidence(evidence_document(extra_data={"policy.a.csv": "g, user, role:fixture", "policy.z.csv": policy}))
             with self.subTest(policy="withheld"), self.assertRaises(verifier.VerificationFailure) as caught:
                 self.validate()
-            self.assertEqual(caught.exception.category, "RBAC_EVIDENCE_UNSAFE")
+            self.assertEqual(caught.exception.category, "RBAC_POLICY_UNSAFE")
 
     def test_malformed_or_ambiguous_fragment_records_are_rejected(self):
         for policy in ("p, broken", 'p, "unterminated', "g, user, role:reader, domain",
@@ -320,7 +361,7 @@ class VerifyArgocdPermissionsDiagnosticTests(unittest.TestCase):
             self.write_evidence(evidence_document(extra_data={"policy.bad.csv": policy}))
             with self.subTest(policy="withheld"), self.assertRaises(verifier.VerificationFailure) as caught:
                 self.validate()
-            self.assertEqual(caught.exception.category, "RBAC_EVIDENCE_INVALID")
+            self.assertEqual(caught.exception.category, "RBAC_POLICY_VALIDATION")
 
 
 if __name__ == "__main__":

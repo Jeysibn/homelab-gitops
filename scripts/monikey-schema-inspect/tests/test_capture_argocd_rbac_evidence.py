@@ -199,7 +199,9 @@ class CaptureArgocdRbacEvidenceTests(unittest.TestCase):
 
     def test_all_supported_fragments_are_preserved(self):
         data = {"policy.github-actions.csv": "fixture", "policy.github-actions-project.csv": "other"}
-        self.assertEqual(capture.rbac_evidence(kubernetes_object("argocd-rbac-cm", data=data))["data"], data)
+        captured = capture.rbac_evidence(kubernetes_object("argocd-rbac-cm", data=data))["data"]
+        self.assertEqual(captured, data)
+        self.assertEqual(list(captured), sorted(data))
 
     def test_resource_specific_diagnostics(self):
         with self.assertRaisesRegex(capture.EvidenceError, "APP_PROJECT_VALIDATION"):

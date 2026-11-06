@@ -160,7 +160,7 @@ def validate_rbac_evidence(
         or not isinstance(project_spec, dict)
         or not isinstance(project_spec.get("roles"), list)
     ):
-        raise VerificationFailure("RBAC_EVIDENCE_INVALID")
+        raise VerificationFailure("APP_PROJECT_VALIDATION")
     if require_project_role:
         validate_project_policy(app_project)
 
@@ -180,12 +180,12 @@ def validate_rbac_evidence(
         or data.get("policy.matchMode", "glob") != "glob"
         or not isinstance(data.get("policy.csv", ""), str)
     ):
-        raise VerificationFailure("RBAC_EVIDENCE_INVALID")
+        raise VerificationFailure("RBAC_CONFIGMAP_VALIDATION")
     # role:readonly grants applications get */* in the pinned Argo CD policy.
     # It cannot be narrowed by the project role, so it violates this token's
     # one-Application read scope.
     if data.get("policy.default", "").strip():
-        raise VerificationFailure("RBAC_EVIDENCE_UNSAFE")
+        raise VerificationFailure("RBAC_POLICY_UNSAFE")
 
     validate_composed_policy(data)
     return evidence
@@ -206,40 +206,40 @@ def validate_composed_policy(data: dict) -> None:
                 continue
             row = [field.strip() for field in row]
             if any(not field or "," in field or any(ord(char) < 32 for char in field) for field in row):
-                raise VerificationFailure("RBAC_EVIDENCE_INVALID")
+                raise VerificationFailure("RBAC_POLICY_VALIDATION")
             if row[0] == "g":
                 # The pinned model has a two-argument role relation, without domains.
                 if len(row) != 3 or any("*" in field for field in row):
-                    raise VerificationFailure("RBAC_EVIDENCE_INVALID")
+                    raise VerificationFailure("RBAC_POLICY_VALIDATION")
                 if row[2] in {"role:admin", "role:readonly"}:
-                    raise VerificationFailure("RBAC_EVIDENCE_UNSAFE")
+                    raise VerificationFailure("RBAC_POLICY_UNSAFE")
                 inheritance.setdefault(row[1], set()).add(row[2])
                 continue
             if row[0] != "p" or len(row) != 6 or row[5] not in {"allow", "deny"}:
-                raise VerificationFailure("RBAC_EVIDENCE_INVALID")
+                raise VerificationFailure("RBAC_POLICY_VALIDATION")
             resource, action = row[2:4]
             if not re.fullmatch(r"[a-z*.-]+", resource) or not any(
                 fnmatch.fnmatchcase(candidate, resource) for candidate in SUPPORTED_RESOURCES
             ) or not re.fullmatch(r"[A-Za-z0-9_/*.-]+", action):
-                raise VerificationFailure("RBAC_EVIDENCE_INVALID")
+                raise VerificationFailure("RBAC_POLICY_VALIDATION")
             if action not in SUPPORTED_ACTIONS and not action.startswith(("update/", "delete/", "action/")) and "*" not in action:
-                raise VerificationFailure("RBAC_EVIDENCE_INVALID")
+                raise VerificationFailure("RBAC_POLICY_VALIDATION")
             if row[5] == "deny":
                 continue
             # Conservatively reject mutation grants irrespective of global role
             # membership. Wildcards and inherited roles cannot bypass this rule.
             if action != "get":
-                raise VerificationFailure("RBAC_EVIDENCE_UNSAFE")
+                raise VerificationFailure("RBAC_POLICY_UNSAFE")
             if fnmatch.fnmatchcase("applications", resource) and (
                 resource != "applications" or row[4] != APPLICATION_OBJECT
             ):
-                raise VerificationFailure("RBAC_EVIDENCE_UNSAFE")
+                raise VerificationFailure("RBAC_POLICY_UNSAFE")
     except csv.Error as error:
-        raise VerificationFailure("RBAC_EVIDENCE_INVALID") from error
+        raise VerificationFailure("RBAC_POLICY_VALIDATION") from error
     visiting, visited = set(), set()
     def visit(subject):
         if subject in visiting:
-            raise VerificationFailure("RBAC_EVIDENCE_INVALID")
+            raise VerificationFailure("RBAC_POLICY_VALIDATION")
         if subject in visited:
             return
         visiting.add(subject)
@@ -258,7 +258,7 @@ def validate_project_policy(project: object) -> None:
         metadata = project.get("metadata")
         roles = project.get("spec", {}).get("roles", [])
     except (json.JSONDecodeError, AttributeError, TypeError) as error:
-        raise VerificationFailure("RBAC_EVIDENCE_INVALID") from error
+        raise VerificationFailure("APP_PROJECT_VALIDATION") from error
     if (
         not isinstance(project, dict)
         or not isinstance(metadata, dict)
@@ -267,15 +267,15 @@ def validate_project_policy(project: object) -> None:
         or not metadata.get("uid")
         or not metadata.get("resourceVersion")
     ):
-        raise VerificationFailure("RBAC_EVIDENCE_INVALID")
+        raise VerificationFailure("APP_PROJECT_VALIDATION")
     if not isinstance(roles, list):
-        raise VerificationFailure("RBAC_EVIDENCE_INVALID")
+        raise VerificationFailure("APP_PROJECT_VALIDATION")
     matches = [role for role in roles if isinstance(role, dict) and role.get("name") == "monikey-inspection-reader"]
     if len(matches) != 1:
-        raise VerificationFailure("RBAC_EVIDENCE_INVALID")
+        raise VerificationFailure("APP_PROJECT_VALIDATION")
     role = matches[0]
     if role.get("policies") != [EXPECTED_PROJECT_POLICY] or role.get("groups") not in ([], None):
-        raise VerificationFailure("RBAC_EVIDENCE_INVALID")
+        raise VerificationFailure("APP_PROJECT_VALIDATION")
 
 
 def verify(
