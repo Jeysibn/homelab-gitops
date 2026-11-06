@@ -6,6 +6,7 @@ import re
 import subprocess
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -205,6 +206,26 @@ class ArgoApplicationAuditTests(unittest.TestCase):
             self.assertFalse(result["safeToSync"])
 
     def test_effective_permissions_require_project_role_identity_and_no_write_grants(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        evidence_path = Path(directory.name) / "evidence.json"
+        evidence_path.write_text(json.dumps({
+                "capturedAt": datetime.now(timezone.utc).isoformat(),
+                "cluster": {"context": "default", "apiServer": "https://127.0.0.1:6443"},
+                "appProject": {
+                    "metadata": {"name": "default", "namespace": "argocd", "uid": "project", "resourceVersion": "1"},
+                    "spec": {"roles": [{
+                        "name": "monikey-inspection-reader",
+                        "policies": [permission_audit.EXPECTED_PROJECT_POLICY],
+                        "groups": [],
+                    }]},
+                },
+                "configMap": {
+                    "metadata": {"name": "argocd-rbac-cm", "namespace": "argocd", "uid": "rbac", "resourceVersion": "1"},
+                    "data": {"policy.csv": ""},
+                },
+        }))
+
         class FakeRunner:
             def __init__(self, allow=None, username=permission_audit.EXPECTED_USERNAME):
                 self.allow = allow or set()
@@ -217,22 +238,31 @@ class ArgoApplicationAuditTests(unittest.TestCase):
                     output = json.dumps({"username": self.username})
                 elif command[1:3] == ["account", "can-i"]:
                     check = tuple(command[3:6])
-                    output = "yes" if check in self.allow or check[0] == "get" else "no"
+                    output = "yes" if check in self.allow or check == ("get", "applications", "default/monikey-inspection-access") else "no"
                 else:
                     output = ""
                 return subprocess.CompletedProcess(command, 0, stdout=output, stderr="")
 
         runner = FakeRunner()
-        permission_audit.verify("argocd", runner)
+        permission_audit.verify(
+            "argocd", runner, rbac_evidence_file=str(evidence_path),
+            expected_context="default", expected_api_server="https://127.0.0.1:6443",
+        )
         self.assertEqual(len(runner.commands), len(permission_audit.PERMISSION_CHECKS) + 1)
         self.assertEqual(runner.commands[1][3:6], ["get", "applications", "default/monikey-inspection-access"])
 
         with self.assertRaisesRegex(ValueError, "IDENTITY_MISMATCH"):
-            permission_audit.verify("argocd", FakeRunner(username="admin"))
+            permission_audit.verify(
+                "argocd", FakeRunner(username="admin"), rbac_evidence_file=str(evidence_path),
+                expected_context="default", expected_api_server="https://127.0.0.1:6443",
+            )
 
-        write_check = permission_audit.PERMISSION_CHECKS[1][:3]
+        write_check = permission_audit.PERMISSION_CHECKS[2][:3]
         with self.assertRaisesRegex(ValueError, "UNEXPECTED_PERMISSION_ALLOWED"):
-            permission_audit.verify("argocd", FakeRunner(allow={write_check}))
+            permission_audit.verify(
+                "argocd", FakeRunner(allow={write_check}), rbac_evidence_file=str(evidence_path),
+                expected_context="default", expected_api_server="https://127.0.0.1:6443",
+            )
 
         class MalformedRunner(FakeRunner):
             def __call__(self, command, **kwargs):
@@ -241,19 +271,22 @@ class ArgoApplicationAuditTests(unittest.TestCase):
                 return super().__call__(command, **kwargs)
 
         with self.assertRaisesRegex(ValueError, "INVALID_PERMISSION_RESPONSE"):
-            permission_audit.verify("argocd", MalformedRunner())
+            permission_audit.verify(
+                "argocd", MalformedRunner(), rbac_evidence_file=str(evidence_path),
+                expected_context="default", expected_api_server="https://127.0.0.1:6443",
+            )
 
         required_denials = {
             ("sync", "applications", "default/monikey-inspection-access"),
             ("update", "applications", "default/monikey-inspection-access"),
             ("delete", "applications", "default/monikey-inspection-access"),
             ("override", "applications", "default/monikey-inspection-access"),
-            ("action/*", "applications", "default/monikey-inspection-access"),
+            ("action", "applications", "default/monikey-inspection-access"),
         }
         self.assertTrue(required_denials.issubset({check[:3] for check in permission_audit.PERMISSION_CHECKS}))
         broad_denials = {
-            (action, resource, "*")
-            for resource in ("applicationsets", "clusters", "projects", "repositories",
+            (action, resource, "*/*" if resource in {"applicationsets"} else "*")
+            for resource in ("applicationsets", "clusters", "projects", "repositories", "write-repositories",
                              "certificates", "gpgkeys", "accounts")
             for action in ("create", "update", "delete")
         }
@@ -350,6 +383,10 @@ exit "$SIMULATED_EXIT"
         self.assertIn("tailscale/github-action@v2", workflow)
         self.assertIn('argocd "${argocd_server_crt_args[@]}" app get monikey-inspection-access', workflow)
         self.assertIn("verify_argocd_permissions.py", workflow)
+        self.assertIn("vars.ARGOCD_RBAC_EVIDENCE_B64", workflow)
+        self.assertIn("--check-rbac-evidence", workflow)
+        self.assertLess(workflow.index("Require fresh global Argo CD RBAC evidence"),
+                        workflow.index("Verify the token identity and effective read-only permissions"))
         self.assertLess(workflow.index("verify_argocd_permissions.py"),
                         workflow.index("Inspect Application and compare resources"))
         self.assertIn("--app-namespace argocd", workflow)
