@@ -13,6 +13,11 @@ spec = importlib.util.spec_from_file_location(
 )
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
+verifier_spec = importlib.util.spec_from_file_location(
+    "verify_argocd_permissions_bootstrap_test", ROOT / "verify_argocd_permissions.py"
+)
+verifier = importlib.util.module_from_spec(verifier_spec)
+verifier_spec.loader.exec_module(verifier)
 REPO_ROOT = ROOT.parents[1]
 
 
@@ -97,6 +102,12 @@ class ReadonlyTokenBootstrapTests(unittest.TestCase):
         self.assertIn("ARGOCD_AUTH_TOKEN: ${{ secrets.ARGOCD_AUTH_TOKEN }}", workflow)
         self.assertIn("SECRET_WRITER_TOKEN: ${{ secrets.MONIKEY_ENVIRONMENT_SECRET_WRITER_TOKEN }}", workflow)
         self.assertIn("account can-i update projects default", workflow)
+        for action, resource, _subresource in re.findall(
+            r"account can-i ([a-z-]+) ([a-z-]+) ([^\s\\]+)", workflow
+        ):
+            with self.subTest(action=action, resource=resource):
+                self.assertIn(action, verifier.SUPPORTED_ACTIONS)
+                self.assertIn(resource, verifier.SUPPORTED_RESOURCES)
         self.assertIn("proj get default --grpc-web --output json", workflow)
         self.assertIn("--action get --permission allow --object monikey-inspection-access", workflow)
         self.assertIn("--expires-in 1h", workflow)
@@ -127,7 +138,8 @@ class ReadonlyTokenBootstrapTests(unittest.TestCase):
         required = set(re.findall(r': "\$\{([A-Z][A-Z0-9_]+):\?', credential_step))
         self.assertEqual(required, {
             "ARGOCD_SERVER", "ARGOCD_AUTH_TOKEN", "SECRET_WRITER_TOKEN",
-            "TS_OAUTH_CLIENT_ID", "TS_OAUTH_SECRET",
+            "TS_OAUTH_CLIENT_ID", "TS_OAUTH_SECRET", "ARGOCD_KUBE_CONTEXT",
+            "ARGOCD_KUBE_API_SERVER",
         })
         self.assertTrue(required.issubset(declared))
         bootstrap_job = workflow.split("  bootstrap:", 1)[1]

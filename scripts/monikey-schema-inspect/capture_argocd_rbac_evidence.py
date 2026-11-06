@@ -118,6 +118,7 @@ def capture(context: str, api_server: str, output: Path, run=subprocess.run) -> 
     )
     evidence = {
         "capturedAt": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "cluster": {"context": context, "apiServer": api_server},
         "appProject": project_evidence(project),
         "configMap": rbac_evidence(config_map),
     }

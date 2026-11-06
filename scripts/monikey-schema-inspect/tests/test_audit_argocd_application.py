@@ -211,6 +211,7 @@ class ArgoApplicationAuditTests(unittest.TestCase):
         evidence_path = Path(directory.name) / "evidence.json"
         evidence_path.write_text(json.dumps({
                 "capturedAt": datetime.now(timezone.utc).isoformat(),
+                "cluster": {"context": "default", "apiServer": "https://127.0.0.1:6443"},
                 "appProject": {
                     "metadata": {"name": "default", "namespace": "argocd", "uid": "project", "resourceVersion": "1"},
                     "spec": {"roles": [{
@@ -221,7 +222,7 @@ class ArgoApplicationAuditTests(unittest.TestCase):
                 },
                 "configMap": {
                     "metadata": {"name": "argocd-rbac-cm", "namespace": "argocd", "uid": "rbac", "resourceVersion": "1"},
-                    "data": {"policy.default": "role:readonly", "policy.csv": ""},
+                    "data": {"policy.csv": ""},
                 },
         }))
 
@@ -237,22 +238,31 @@ class ArgoApplicationAuditTests(unittest.TestCase):
                     output = json.dumps({"username": self.username})
                 elif command[1:3] == ["account", "can-i"]:
                     check = tuple(command[3:6])
-                    output = "yes" if check in self.allow or check[0] == "get" else "no"
+                    output = "yes" if check in self.allow or check == ("get", "applications", "default/monikey-inspection-access") else "no"
                 else:
                     output = ""
                 return subprocess.CompletedProcess(command, 0, stdout=output, stderr="")
 
         runner = FakeRunner()
-        permission_audit.verify("argocd", runner, rbac_evidence_file=str(evidence_path))
+        permission_audit.verify(
+            "argocd", runner, rbac_evidence_file=str(evidence_path),
+            expected_context="default", expected_api_server="https://127.0.0.1:6443",
+        )
         self.assertEqual(len(runner.commands), len(permission_audit.PERMISSION_CHECKS) + 1)
         self.assertEqual(runner.commands[1][3:6], ["get", "applications", "default/monikey-inspection-access"])
 
         with self.assertRaisesRegex(ValueError, "IDENTITY_MISMATCH"):
-            permission_audit.verify("argocd", FakeRunner(username="admin"), rbac_evidence_file=str(evidence_path))
+            permission_audit.verify(
+                "argocd", FakeRunner(username="admin"), rbac_evidence_file=str(evidence_path),
+                expected_context="default", expected_api_server="https://127.0.0.1:6443",
+            )
 
-        write_check = permission_audit.PERMISSION_CHECKS[1][:3]
+        write_check = permission_audit.PERMISSION_CHECKS[2][:3]
         with self.assertRaisesRegex(ValueError, "UNEXPECTED_PERMISSION_ALLOWED"):
-            permission_audit.verify("argocd", FakeRunner(allow={write_check}), rbac_evidence_file=str(evidence_path))
+            permission_audit.verify(
+                "argocd", FakeRunner(allow={write_check}), rbac_evidence_file=str(evidence_path),
+                expected_context="default", expected_api_server="https://127.0.0.1:6443",
+            )
 
         class MalformedRunner(FakeRunner):
             def __call__(self, command, **kwargs):
@@ -261,7 +271,10 @@ class ArgoApplicationAuditTests(unittest.TestCase):
                 return super().__call__(command, **kwargs)
 
         with self.assertRaisesRegex(ValueError, "INVALID_PERMISSION_RESPONSE"):
-            permission_audit.verify("argocd", MalformedRunner(), rbac_evidence_file=str(evidence_path))
+            permission_audit.verify(
+                "argocd", MalformedRunner(), rbac_evidence_file=str(evidence_path),
+                expected_context="default", expected_api_server="https://127.0.0.1:6443",
+            )
 
         required_denials = {
             ("sync", "applications", "default/monikey-inspection-access"),
@@ -272,7 +285,7 @@ class ArgoApplicationAuditTests(unittest.TestCase):
         }
         self.assertTrue(required_denials.issubset({check[:3] for check in permission_audit.PERMISSION_CHECKS}))
         broad_denials = {
-            (action, resource, "*")
+            (action, resource, "*/*" if resource in {"applicationsets"} else "*")
             for resource in ("applicationsets", "clusters", "projects", "repositories", "write-repositories",
                              "certificates", "gpgkeys", "accounts")
             for action in ("create", "update", "delete")

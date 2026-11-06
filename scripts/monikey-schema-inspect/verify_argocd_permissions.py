@@ -49,6 +49,9 @@ class VerificationFailure(ValueError):
 # The API rejects action/* and fine-grained actions; policy evidence covers them.
 PERMISSION_CHECKS = [
     ("get", "applications", APPLICATION_OBJECT, "yes"),
+    # This credential is scoped to one named Application; reject inherited
+    # application-read access from global roles or policy.default.
+    ("get", "applications", "*/*", "no"),
     ("create", "applications", APPLICATION_OBJECT, "no"),
     ("update", "applications", APPLICATION_OBJECT, "no"),
     ("delete", "applications", APPLICATION_OBJECT, "no"),
@@ -56,15 +59,15 @@ PERMISSION_CHECKS = [
     ("override", "applications", APPLICATION_OBJECT, "no"),
     ("action", "applications", APPLICATION_OBJECT, "no"),
     # Check for broad write grants inherited from policy.default or groups.
-    ("create", "applications", "*", "no"),
-    ("update", "applications", "*", "no"),
-    ("delete", "applications", "*", "no"),
-    ("sync", "applications", "*", "no"),
-    ("override", "applications", "*", "no"),
-    ("action", "applications", "*", "no"),
-    ("create", "applicationsets", "*", "no"),
-    ("update", "applicationsets", "*", "no"),
-    ("delete", "applicationsets", "*", "no"),
+    ("create", "applications", "*/*", "no"),
+    ("update", "applications", "*/*", "no"),
+    ("delete", "applications", "*/*", "no"),
+    ("sync", "applications", "*/*", "no"),
+    ("override", "applications", "*/*", "no"),
+    ("action", "applications", "*/*", "no"),
+    ("create", "applicationsets", "*/*", "no"),
+    ("update", "applicationsets", "*/*", "no"),
+    ("delete", "applicationsets", "*/*", "no"),
     ("create", "clusters", "*", "no"),
     ("update", "clusters", "*", "no"),
     ("delete", "clusters", "*", "no"),
@@ -86,7 +89,7 @@ PERMISSION_CHECKS = [
     ("create", "accounts", "*", "no"),
     ("update", "accounts", "*", "no"),
     ("delete", "accounts", "*", "no"),
-    ("create", "exec", "*", "no"),
+    ("create", "exec", "*/*", "no"),
     ("invoke", "extensions", "*", "no"),
 ]
 
@@ -113,7 +116,11 @@ def run_checked(command: list[str], run=subprocess.run) -> str:
 
 
 def validate_rbac_evidence(
-    path: str | None, now: datetime | None = None, require_project_role: bool = True
+    path: str | None,
+    now: datetime | None = None,
+    require_project_role: bool = True,
+    expected_context: str | None = None,
+    expected_api_server: str | None = None,
 ) -> dict:
     if not path or not Path(path).is_file():
         raise VerificationFailure("RBAC_EVIDENCE_UNAVAILABLE")
@@ -126,6 +133,16 @@ def validate_rbac_evidence(
     if captured_at.tzinfo is None or (now - captured_at).total_seconds() > RBAC_EVIDENCE_MAX_AGE_SECONDS:
         raise VerificationFailure("RBAC_EVIDENCE_UNAVAILABLE")
     if (captured_at - now).total_seconds() > 60:
+        raise VerificationFailure("RBAC_EVIDENCE_INVALID")
+
+    cluster = evidence.get("cluster") if isinstance(evidence, dict) else None
+    if (
+        not isinstance(cluster, dict)
+        or not expected_context
+        or not expected_api_server
+        or cluster.get("context") != expected_context
+        or cluster.get("apiServer") != expected_api_server
+    ):
         raise VerificationFailure("RBAC_EVIDENCE_INVALID")
 
     app_project = evidence.get("appProject") if isinstance(evidence, dict) else None
@@ -160,7 +177,10 @@ def validate_rbac_evidence(
         or not isinstance(data.get("policy.csv", ""), str)
     ):
         raise VerificationFailure("RBAC_EVIDENCE_INVALID")
-    if data.get("policy.default", "").strip() not in {"", "role:readonly"}:
+    # role:readonly grants applications get */* in the pinned Argo CD policy.
+    # It cannot be narrowed by the project role, so it violates this token's
+    # one-Application read scope.
+    if data.get("policy.default", "").strip():
         raise VerificationFailure("RBAC_EVIDENCE_UNSAFE")
 
     try:
@@ -221,6 +241,8 @@ def verify(
     server_crt: str | None = None,
     rbac_evidence_file: str | None = None,
     project_json_file: str | None = None,
+    expected_context: str | None = None,
+    expected_api_server: str | None = None,
 ) -> None:
     command_prefix = [executable]
     if server_crt:
@@ -228,7 +250,12 @@ def verify(
         if not certificate.is_file() or not os.access(certificate, os.R_OK):
             raise VerificationFailure("TLS_OR_TRUST_FAILURE")
         command_prefix.extend(["--server-crt", server_crt])
-    evidence = validate_rbac_evidence(rbac_evidence_file, require_project_role=not project_json_file)
+    evidence = validate_rbac_evidence(
+        rbac_evidence_file,
+        require_project_role=not project_json_file,
+        expected_context=expected_context,
+        expected_api_server=expected_api_server,
+    )
     identity_output = run_checked(
         [*command_prefix, "account", "get-user-info", "--grpc-web", "--output", "json"], run
     )
@@ -269,18 +296,27 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--server-crt", default=os.environ.get("ARGOCD_SERVER_CRT_FILE"))
     parser.add_argument("--rbac-evidence-file", default=os.environ.get("ARGOCD_RBAC_EVIDENCE_FILE"))
+    parser.add_argument("--expected-kubernetes-context", default=os.environ.get("ARGOCD_KUBE_CONTEXT"))
+    parser.add_argument("--expected-kubernetes-api-server", default=os.environ.get("ARGOCD_KUBE_API_SERVER"))
     parser.add_argument("--project-json-file")
     parser.add_argument("--check-rbac-evidence", action="store_true")
     args = parser.parse_args()
     try:
         if args.check_rbac_evidence:
-            validate_rbac_evidence(args.rbac_evidence_file, require_project_role=False)
+            validate_rbac_evidence(
+                args.rbac_evidence_file,
+                require_project_role=False,
+                expected_context=args.expected_kubernetes_context,
+                expected_api_server=args.expected_kubernetes_api_server,
+            )
             print("Fresh global Argo CD RBAC evidence verified.")
             return 0
         verify(
             server_crt=args.server_crt,
             rbac_evidence_file=args.rbac_evidence_file,
             project_json_file=args.project_json_file,
+            expected_context=args.expected_kubernetes_context,
+            expected_api_server=args.expected_kubernetes_api_server,
         )
     except VerificationFailure as error:
         print(f"::error::{error.diagnostic()}")

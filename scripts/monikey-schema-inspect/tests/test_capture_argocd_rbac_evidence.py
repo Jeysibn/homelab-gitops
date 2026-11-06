@@ -55,6 +55,9 @@ class CaptureArgocdRbacEvidenceTests(unittest.TestCase):
             self.assertEqual(len(commands), 4)
             self.assertEqual(document["appProject"]["spec"]["roles"], [role])
             self.assertEqual(document["configMap"]["data"], config_map["data"])
+            self.assertEqual(document["cluster"], {
+                "context": "trusted-context", "apiServer": "https://cluster.invalid:6443"
+            })
             self.assertNotIn("managedFields", json.dumps(document))
             self.assertNotIn("jwtTokensByRole", json.dumps(document))
 

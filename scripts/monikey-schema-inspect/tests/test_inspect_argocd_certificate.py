@@ -298,6 +298,7 @@ class ArgoCertificateDiagnosticTests(unittest.TestCase):
             rbac_evidence = Path(directory) / "rbac-evidence.json"
             rbac_evidence.write_text(json.dumps({
                 "capturedAt": datetime.now(timezone.utc).isoformat(),
+                "cluster": {"context": "default", "apiServer": "https://127.0.0.1:6443"},
                 "appProject": {
                     "metadata": {"name": "default", "namespace": "argocd", "uid": "project", "resourceVersion": "1"},
                     "spec": {"roles": [{
@@ -308,10 +309,13 @@ class ArgoCertificateDiagnosticTests(unittest.TestCase):
                 },
                 "configMap": {
                     "metadata": {"name": "argocd-rbac-cm", "namespace": "argocd", "uid": "rbac", "resourceVersion": "1"},
-                    "data": {"policy.default": "role:readonly", "policy.csv": ""},
+                    "data": {"policy.csv": ""},
                 },
             }))
-            verifier.verify(run=runner, server_crt=str(trust_file), rbac_evidence_file=str(rbac_evidence))
+            verifier.verify(
+                run=runner, server_crt=str(trust_file), rbac_evidence_file=str(rbac_evidence),
+                expected_context="default", expected_api_server="https://127.0.0.1:6443",
+            )
         self.assertTrue(calls)
         self.assertTrue(all(
             command[1:3] == ["--server-crt", str(trust_file)]

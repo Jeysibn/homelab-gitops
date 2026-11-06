@@ -8,16 +8,19 @@ from pathlib import Path
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / "verify_argocd_permissions.py"
+EXPECTED_CONTEXT = "default"
+EXPECTED_API_SERVER = "https://127.0.0.1:6443"
 spec = importlib.util.spec_from_file_location("verify_argocd_permissions_diagnostics", SCRIPT)
 verifier = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(verifier)
 
 
 def evidence_document(policy_csv="", *, project_roles=None, captured_at=None, extra_data=None):
-    data = {"policy.default": "role:readonly", "policy.csv": policy_csv}
+    data = {"policy.csv": policy_csv}
     data.update(extra_data or {})
     return {
         "capturedAt": captured_at or datetime.now(timezone.utc).isoformat(),
+        "cluster": {"context": EXPECTED_CONTEXT, "apiServer": EXPECTED_API_SERVER},
         "appProject": {
             "metadata": {
                 "name": "default", "namespace": "argocd", "uid": "project-uid",
@@ -75,7 +78,20 @@ class VerifyArgocdPermissionsDiagnosticTests(unittest.TestCase):
         self.evidence_path.write_text(json.dumps(document), encoding="utf-8")
 
     def verify(self, runner):
-        verifier.verify(run=runner, rbac_evidence_file=str(self.evidence_path))
+        verifier.verify(
+            run=runner,
+            rbac_evidence_file=str(self.evidence_path),
+            expected_context=EXPECTED_CONTEXT,
+            expected_api_server=EXPECTED_API_SERVER,
+        )
+
+    def validate(self, path=None, **kwargs):
+        return verifier.validate_rbac_evidence(
+            path if path is not None else str(self.evidence_path),
+            expected_context=EXPECTED_CONTEXT,
+            expected_api_server=EXPECTED_API_SERVER,
+            **kwargs,
+        )
 
     def test_identity_mismatch_is_sanitized(self):
         with self.assertRaises(verifier.VerificationFailure) as caught:
@@ -97,6 +113,13 @@ class VerifyArgocdPermissionsDiagnosticTests(unittest.TestCase):
             self.verify(runner_for(permission_values={second: "yes"}))
         self.assertEqual(caught.exception.category, "UNEXPECTED_PERMISSION_ALLOWED")
         self.assertEqual(caught.exception.check_number, 2)
+        self.assertEqual(caught.exception.expected, "no")
+
+    def test_broad_application_read_is_denied(self):
+        check = next(check for check in verifier.PERMISSION_CHECKS if check[:3] == ("get", "applications", "*/*"))
+        with self.assertRaises(verifier.VerificationFailure) as caught:
+            self.verify(runner_for(permission_values={check[:3]: "yes"}))
+        self.assertEqual(caught.exception.category, "UNEXPECTED_PERMISSION_ALLOWED")
         self.assertEqual(caught.exception.expected, "no")
 
     def test_malformed_permission_response_is_sanitized(self):
@@ -155,6 +178,12 @@ class VerifyArgocdPermissionsDiagnosticTests(unittest.TestCase):
                       verifier.PERMISSION_CHECKS)
         self.assertFalse(any(action == "rollback" for action, *_ in verifier.PERMISSION_CHECKS))
 
+    def test_project_scoped_broad_checks_use_project_object_wildcards(self):
+        for action, resource, object_name, _expected in verifier.PERMISSION_CHECKS:
+            if resource in {"applications", "applicationsets", "exec"} and object_name in {"*", "*/*"}:
+                with self.subTest(action=action, resource=resource):
+                    self.assertEqual(object_name, "*/*")
+
     def test_fine_grained_mutation_grants_block_verification(self):
         policies = (
             "p, role:readonly, applications, update/*, *, allow",
@@ -167,7 +196,7 @@ class VerifyArgocdPermissionsDiagnosticTests(unittest.TestCase):
                 document = evidence_document(policy)
                 self.write_evidence(document)
                 with self.assertRaises(verifier.VerificationFailure) as caught:
-                    verifier.validate_rbac_evidence(str(self.evidence_path))
+                    self.validate()
                 self.assertEqual(caught.exception.category, "RBAC_EVIDENCE_UNSAFE")
 
     def test_project_role_extra_policy_or_group_blocks_verification(self):
@@ -181,18 +210,20 @@ class VerifyArgocdPermissionsDiagnosticTests(unittest.TestCase):
             with self.subTest(role="[role withheld]"):
                 self.write_evidence(evidence_document(project_roles=[role]))
                 with self.assertRaises(verifier.VerificationFailure) as caught:
-                    verifier.validate_rbac_evidence(str(self.evidence_path))
+                    self.validate()
                 self.assertEqual(caught.exception.category, "RBAC_EVIDENCE_INVALID")
 
         duplicate = cases[1]
         self.write_evidence(evidence_document(project_roles=[duplicate, duplicate]))
         with self.assertRaises(verifier.VerificationFailure) as caught:
-            verifier.validate_rbac_evidence(str(self.evidence_path))
+            self.validate()
         self.assertEqual(caught.exception.category, "RBAC_EVIDENCE_INVALID")
 
     def test_missing_stale_and_malformed_global_evidence_fail_closed(self):
         with self.assertRaises(verifier.VerificationFailure) as missing:
-            verifier.validate_rbac_evidence(None)
+            verifier.validate_rbac_evidence(
+                None, expected_context=EXPECTED_CONTEXT, expected_api_server=EXPECTED_API_SERVER
+            )
         self.assertEqual(missing.exception.category, "RBAC_EVIDENCE_UNAVAILABLE")
 
         with self.assertRaises(verifier.VerificationFailure) as blocked:
@@ -202,13 +233,13 @@ class VerifyArgocdPermissionsDiagnosticTests(unittest.TestCase):
         stale = evidence_document(captured_at="2020-01-01T00:00:00+00:00")
         self.write_evidence(stale)
         with self.assertRaises(verifier.VerificationFailure) as expired:
-            verifier.validate_rbac_evidence(str(self.evidence_path))
+            self.validate()
         self.assertEqual(expired.exception.category, "RBAC_EVIDENCE_UNAVAILABLE")
 
         malformed = evidence_document("p, broken")
         self.write_evidence(malformed)
         with self.assertRaises(verifier.VerificationFailure) as invalid:
-            verifier.validate_rbac_evidence(str(self.evidence_path))
+            self.validate()
         self.assertEqual(invalid.exception.category, "RBAC_EVIDENCE_INVALID")
 
     def test_group_claims_and_non_glob_policy_mode_fail_closed(self):
@@ -218,13 +249,26 @@ class VerifyArgocdPermissionsDiagnosticTests(unittest.TestCase):
 
         self.write_evidence(evidence_document(extra_data={"policy.matchMode": "regex"}))
         with self.assertRaises(verifier.VerificationFailure) as invalid:
-            verifier.validate_rbac_evidence(str(self.evidence_path))
+            self.validate()
         self.assertEqual(invalid.exception.category, "RBAC_EVIDENCE_INVALID")
 
         self.write_evidence(evidence_document(extra_data={"policy.default": "role:admin"}))
         with self.assertRaises(verifier.VerificationFailure) as unsafe:
-            verifier.validate_rbac_evidence(str(self.evidence_path))
+            self.validate()
         self.assertEqual(unsafe.exception.category, "RBAC_EVIDENCE_UNSAFE")
+
+        self.write_evidence(evidence_document(extra_data={"policy.default": "role:readonly"}))
+        with self.assertRaises(verifier.VerificationFailure) as broad_read:
+            self.validate()
+        self.assertEqual(broad_read.exception.category, "RBAC_EVIDENCE_UNSAFE")
+
+    def test_evidence_must_match_approved_cluster_identity(self):
+        document = evidence_document()
+        document["cluster"]["context"] = "other-cluster"
+        self.write_evidence(document)
+        with self.assertRaises(verifier.VerificationFailure) as caught:
+            self.validate()
+        self.assertEqual(caught.exception.category, "RBAC_EVIDENCE_INVALID")
 
 
 if __name__ == "__main__":
