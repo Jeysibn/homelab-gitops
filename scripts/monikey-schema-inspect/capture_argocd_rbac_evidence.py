@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 import subprocess
+import stat
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -16,22 +17,24 @@ RBAC_DATA_KEYS = {"policy.csv", "policy.default", "policy.matchMode", "scopes"}
 
 
 class EvidenceError(ValueError):
-    pass
+    def __init__(self, stage="EVIDENCE_VALIDATION"):
+        self.stage = stage
+        super().__init__(stage)
 
 
-def checked_json(command: list[str], run=subprocess.run) -> dict:
+def checked_json(command: list[str], run=subprocess.run, stage="KUBERNETES_READ") -> dict:
     try:
         result = run(command, capture_output=True, text=True, timeout=15, check=False)
     except (OSError, subprocess.SubprocessError) as error:
-        raise EvidenceError from error
+        raise EvidenceError(stage) from error
     if result.returncode != 0:
-        raise EvidenceError
+        raise EvidenceError(stage)
     try:
         document = json.loads(result.stdout)
     except (json.JSONDecodeError, TypeError) as error:
-        raise EvidenceError from error
+        raise EvidenceError(stage) from error
     if not isinstance(document, dict):
-        raise EvidenceError
+        raise EvidenceError(stage)
     return document
 
 
@@ -88,6 +91,45 @@ def rbac_evidence(document: dict) -> dict:
     }
 
 
+def write_private(output: Path, evidence: dict) -> None:
+    """Create once inside a private directory owned by this effective user."""
+    try:
+        payload = json.dumps(evidence, separators=(",", ":")) + "\n"
+    except (TypeError, ValueError) as error:
+        raise EvidenceError("SERIALIZATION") from error
+    directory_fd = None
+    created = False
+    complete = False
+    stage = "OUTPUT_DIRECTORY"
+    try:
+        directory_fd = os.open(output.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        info = os.fstat(directory_fd)
+        if info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) & 0o077:
+            raise EvidenceError(stage)
+        stage = "OUTPUT_CREATE"
+        fd = os.open(output.name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                     0o600, dir_fd=directory_fd)
+        created = True
+        stage = "OUTPUT_WRITE"
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            stream.write(payload)
+            stream.flush()
+            stage = "OUTPUT_PERMISSIONS"
+            os.fchmod(stream.fileno(), 0o600)
+        complete = True
+    except OSError as error:
+        raise EvidenceError(stage) from error
+    finally:
+        try:
+            if created and not complete:
+                os.unlink(output.name, dir_fd=directory_fd)
+        except OSError as error:
+            raise EvidenceError("OUTPUT_CLEANUP") from error
+        finally:
+            if directory_fd is not None:
+                os.close(directory_fd)
+
+
 def capture(context: str, api_server: str, output: Path, run=subprocess.run) -> None:
     try:
         current_context = run(
@@ -95,9 +137,9 @@ def capture(context: str, api_server: str, output: Path, run=subprocess.run) -> 
             text=True, timeout=10, check=False,
         )
     except (OSError, subprocess.SubprocessError) as error:
-        raise EvidenceError from error
+        raise EvidenceError("CONTEXT_VALIDATION") from error
     if current_context.returncode != 0 or current_context.stdout.strip() != context:
-        raise EvidenceError
+        raise EvidenceError("CONTEXT_VALIDATION")
     try:
         current_server = run(
             ["kubectl", "--context", context, "config", "view", "--minify", "-o",
@@ -105,16 +147,16 @@ def capture(context: str, api_server: str, output: Path, run=subprocess.run) -> 
             capture_output=True, text=True, timeout=10, check=False,
         )
     except (OSError, subprocess.SubprocessError) as error:
-        raise EvidenceError from error
+        raise EvidenceError("API_SERVER_VALIDATION") from error
     if current_server.returncode != 0 or current_server.stdout.strip() != api_server:
-        raise EvidenceError
+        raise EvidenceError("API_SERVER_VALIDATION")
     project = checked_json(
         ["kubectl", "--context", context, "--request-timeout=10s", "get",
-         "appproject.argoproj.io", "default", "--namespace", "argocd", "-o", "json"], run
+         "appproject.argoproj.io", "default", "--namespace", "argocd", "-o", "json"], run, stage="APP_PROJECT_READ"
     )
     config_map = checked_json(
         ["kubectl", "--context", context, "--request-timeout=10s", "get",
-         "configmap", "argocd-rbac-cm", "--namespace", "argocd", "-o", "json"], run
+         "configmap", "argocd-rbac-cm", "--namespace", "argocd", "-o", "json"], run, stage="RBAC_CONFIGMAP_READ"
     )
     evidence = {
         "capturedAt": datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -122,13 +164,7 @@ def capture(context: str, api_server: str, output: Path, run=subprocess.run) -> 
         "appProject": project_evidence(project),
         "configMap": rbac_evidence(config_map),
     }
-    output.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    old_umask = os.umask(0o077)
-    try:
-        output.write_text(json.dumps(evidence, separators=(",", ":")) + "\n", encoding="utf-8")
-        output.chmod(0o600)
-    finally:
-        os.umask(old_umask)
+    write_private(output, evidence)
 
 
 def main() -> int:
@@ -139,8 +175,8 @@ def main() -> int:
     args = parser.parse_args()
     try:
         capture(args.context, args.api_server, args.output)
-    except EvidenceError:
-        print("::error::Fresh Argo CD RBAC evidence could not be captured from the approved cluster context.")
+    except EvidenceError as error:
+        print(f"::error::Argo CD RBAC evidence capture failed: {error.stage}.")
         return 1
     print("Fresh Argo CD RBAC evidence captured with restrictive file permissions.")
     return 0

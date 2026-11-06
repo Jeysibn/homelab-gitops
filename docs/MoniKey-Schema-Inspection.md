@@ -44,12 +44,25 @@ Argo CD grants every authenticated token at least the permissions in `policy.def
 The captured evidence records its Kubernetes context and API server. The workflows compare those fields with the protected Environment variables `ARGOCD_KUBE_CONTEXT` and `ARGOCD_KUBE_API_SERVER`, so a snapshot from another cluster is rejected. For the current homelab, the approved values are context `default` and API server `https://127.0.0.1:6443`. The K3s kubeconfig is root-owned on the homelab host, so capture must run with the existing authorized `sudo` access there:
 
 ```bash
+set -euo pipefail
+# Create the directory as the same privileged user that runs capture.
+evidence_dir="$(sudo -n mktemp -d /tmp/argocd-rbac-evidence.XXXXXXXX)"
+trap 'sudo -n rm -f -- "$evidence_dir/evidence.json"; sudo -n rmdir -- "$evidence_dir"' EXIT
 sudo -n python3 scripts/monikey-schema-inspect/capture_argocd_rbac_evidence.py \
   --context default \
   --api-server https://127.0.0.1:6443 \
-  --output /tmp/argocd-rbac-evidence.json
-sudo -n base64 -w0 /tmp/argocd-rbac-evidence.json
+  --output "$evidence_dir/evidence.json"
+sudo -n python3 scripts/monikey-schema-inspect/verify_argocd_permissions.py \
+  --rbac-evidence-file "$evidence_dir/evidence.json" --check-rbac-evidence \
+  --expected-kubernetes-context default \
+  --expected-kubernetes-api-server https://127.0.0.1:6443
+# Only during an explicitly authorized evidence-update operation:
+sudo -n base64 -w0 "$evidence_dir/evidence.json" | \
+  gh variable set ARGOCD_RBAC_EVIDENCE_B64 --repo Jeysibn/homelab-gitops \
+    --env monikey-inspection-provisioning
 ```
+
+The directory must be private (0700), owned by the capture process user, and not a symlink. Capture creates a new mode-0600 file exclusively and refuses existing paths; failed partial files are removed. Do not pre-create the output file as another user or write directly into shared `/tmp`. Diagnostic messages identify only the failed stage.
 
 Set `ARGOCD_KUBE_CONTEXT=default`, `ARGOCD_KUBE_API_SERVER=https://127.0.0.1:6443`, and the encoded snapshot in the protected Environment variables `ARGOCD_RBAC_EVIDENCE_B64`, then start the intended workflow within 15 minutes. Refresh the snapshot before each run. These variables are not secrets; do not put credentials or Secret objects in the evidence file.
 

@@ -1,5 +1,9 @@
 import importlib.util
 import json
+import os
+import io
+from contextlib import redirect_stdout
+from unittest.mock import patch
 import tempfile
 import unittest
 from pathlib import Path
@@ -87,6 +91,111 @@ class CaptureArgocdRbacEvidenceTests(unittest.TestCase):
         self.assertEqual([item["name"] for item in output["spec"]["roles"]],
                          ["monikey-inspection-reader"])
         self.assertNotIn("status", output)
+
+    def test_existing_output_is_never_overwritten_for_either_owner(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "evidence.json"
+            output.write_text("preserved")
+            for user_id in (0, 1000):
+                with self.subTest(user_id=user_id), patch.object(capture.os, "geteuid", return_value=user_id):
+                    with self.assertRaises(capture.EvidenceError):
+                        capture.write_private(output, {})
+                    self.assertEqual(output.read_text(), "preserved")
+
+    def test_rejects_wrong_directory_owner_and_shared_sticky_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "evidence.json"
+            with patch.object(capture.os, "geteuid", return_value=os.geteuid() + 1):
+                with self.assertRaisesRegex(capture.EvidenceError, "OUTPUT_DIRECTORY"):
+                    capture.write_private(output, {})
+            os.chmod(directory, 0o1777)
+            with self.assertRaisesRegex(capture.EvidenceError, "OUTPUT_DIRECTORY"):
+                capture.write_private(output, {})
+            self.assertFalse(output.exists())
+
+    def test_rejects_symlink_file_and_parent_without_modifying_target(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "target"
+            target.write_text("preserved")
+            link = root / "evidence.json"
+            link.symlink_to(target)
+            with self.assertRaisesRegex(capture.EvidenceError, "OUTPUT_CREATE"):
+                capture.write_private(link, {})
+            parent_link = root / "linked-directory"
+            parent_link.symlink_to(root, target_is_directory=True)
+            with self.assertRaisesRegex(capture.EvidenceError, "OUTPUT_DIRECTORY"):
+                capture.write_private(parent_link / "new.json", {})
+            self.assertEqual(target.read_text(), "preserved")
+
+    def test_protected_regular_create_failure_is_sanitized(self):
+        with tempfile.TemporaryDirectory() as directory:
+            real_open = capture.os.open
+            def denied(path, flags, *args, **kwargs):
+                if flags & os.O_CREAT:
+                    raise PermissionError("private path and configuration")
+                return real_open(path, flags, *args, **kwargs)
+            with patch.object(capture.os, "open", side_effect=denied):
+                with self.assertRaisesRegex(capture.EvidenceError, "OUTPUT_CREATE") as caught:
+                    capture.write_private(Path(directory) / "evidence.json", {})
+            self.assertNotIn("private", str(caught.exception))
+
+    def test_partial_output_is_removed_after_write_or_permission_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "evidence.json"
+            with patch.object(capture.os, "fchmod", side_effect=PermissionError("sensitive")):
+                with self.assertRaisesRegex(capture.EvidenceError, "OUTPUT_PERMISSIONS"):
+                    capture.write_private(output, {})
+            self.assertFalse(output.exists())
+            real_fdopen = capture.os.fdopen
+            def cannot_write(fd, *args, **kwargs):
+                stream = real_fdopen(fd, *args, **kwargs)
+                stream.write = lambda *_: (_ for _ in ()).throw(OSError("sensitive"))
+                return stream
+            with patch.object(capture.os, "fdopen", side_effect=cannot_write):
+                with self.assertRaisesRegex(capture.EvidenceError, "OUTPUT_WRITE"):
+                    capture.write_private(output, {})
+            self.assertFalse(output.exists())
+
+    def test_kubernetes_errors_report_only_requested_stage(self):
+        for stage in ("APP_PROJECT_READ", "RBAC_CONFIGMAP_READ"):
+            def denied(*args, **kwargs):
+                return SimpleNamespace(returncode=1, stdout="private response", stderr="credentials")
+            with self.assertRaises(capture.EvidenceError) as caught:
+                capture.checked_json(["kubectl"], run=denied, stage=stage)
+            self.assertEqual(str(caught.exception), stage)
+
+    def test_serialization_failure_creates_no_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "evidence.json"
+            with self.assertRaisesRegex(capture.EvidenceError, "SERIALIZATION"):
+                capture.write_private(output, {"invalid": object()})
+            self.assertFalse(output.exists())
+
+    def test_capture_attributes_each_kubernetes_failure(self):
+        good = ["trusted-context", "https://cluster.invalid:6443",
+                json.dumps(kubernetes_object("default")),
+                json.dumps(kubernetes_object("argocd-rbac-cm"))]
+        stages = ["CONTEXT_VALIDATION", "API_SERVER_VALIDATION", "APP_PROJECT_READ", "RBAC_CONFIGMAP_READ"]
+        for failing, stage in enumerate(stages):
+            calls = []
+            def runner(*args, **kwargs):
+                index = len(calls)
+                calls.append(args)
+                return SimpleNamespace(returncode=1 if index == failing else 0,
+                                       stdout=good[index], stderr="private response")
+            with tempfile.TemporaryDirectory() as directory:
+                with self.assertRaisesRegex(capture.EvidenceError, stage):
+                    capture.capture("trusted-context", "https://cluster.invalid:6443",
+                                    Path(directory) / "evidence.json", run=runner)
+                self.assertFalse((Path(directory) / "evidence.json").exists())
+
+    def test_main_reports_sanitized_stage_without_traceback(self):
+        with patch("sys.argv", [str(SCRIPT), "--context", "default", "--api-server", "expected", "--output", "unused"]), patch.object(capture, "capture", side_effect=capture.EvidenceError("OUTPUT_WRITE")):
+            out = io.StringIO()
+            with redirect_stdout(out):
+                self.assertEqual(capture.main(), 1)
+            self.assertEqual(out.getvalue(), "::error::Argo CD RBAC evidence capture failed: OUTPUT_WRITE.\n")
 
 
 if __name__ == "__main__":
