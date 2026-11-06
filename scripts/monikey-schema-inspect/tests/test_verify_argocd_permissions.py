@@ -1,3 +1,4 @@
+import csv
 import importlib.util
 import json
 import subprocess
@@ -352,6 +353,55 @@ class VerifyArgocdPermissionsDiagnosticTests(unittest.TestCase):
         with self.assertRaises(verifier.VerificationFailure) as caught:
             self.validate()
         self.assertEqual(caught.exception.category, "RBAC_POLICY_UNSAFE")
+
+    def test_comment_recognition_matches_v351_raw_physical_line_behavior(self):
+        # Argo CD trims each physical line and checks its raw prefix before CSV parsing.
+        inputs = {
+            "# ordinary comment": None,
+            "   # whitespace-prefixed comment": None,
+            '"#not-a-comment", ignored, columns': ["#not-a-comment", "ignored", "columns"],
+        }
+        for line, expected_fields in inputs.items():
+            with self.subTest(line=line):
+                trimmed = line.strip()
+                upstream_fields = (
+                    None if not trimmed or trimmed.startswith("#")
+                    else next(csv.reader([trimmed], skipinitialspace=True, strict=True))
+                )
+                self.assertEqual(upstream_fields, expected_fields)
+
+        for policy in (
+            '# regular comment\np, role:reader, applications, get, '
+            'default/monikey-inspection-access, allow',
+            '   # indented comment\np, role:reader, applications, get, '
+            'default/monikey-inspection-access, allow',
+        ):
+            self.write_evidence(evidence_document(policy))
+            self.validate()
+
+        malformed_records = {
+            "policy.csv": '"#not-a-comment", ignored, columns',
+            "policy..csv": '"#not-a-comment", ignored, columns',
+            "policy.extra.csv": '"#not-a-comment", ignored, columns',
+        }
+        for key, record in malformed_records.items():
+            self.write_evidence(evidence_document(extra_data={key: record}))
+            with self.subTest(key=key), self.assertRaises(verifier.VerificationFailure) as caught:
+                self.validate()
+            self.assertEqual(caught.exception.category, "RBAC_POLICY_VALIDATION")
+
+        for key in ("policy..csv", "policy.extra.csv"):
+            self.write_evidence(evidence_document(extra_data={key: 'p, "unterminated'}))
+            with self.subTest(key=key), self.assertRaises(verifier.VerificationFailure) as caught:
+                self.validate()
+            self.assertEqual(caught.exception.category, "RBAC_POLICY_VALIDATION")
+
+    def test_multiline_quoted_record_is_rejected_per_upstream_physical_line_parser(self):
+        policy = 'p, role:reader, applications, get, "default/\nmonikey-inspection-access", allow'
+        self.write_evidence(evidence_document(extra_data={"policy..csv": policy}))
+        with self.assertRaises(verifier.VerificationFailure) as caught:
+            self.validate()
+        self.assertEqual(caught.exception.category, "RBAC_POLICY_VALIDATION")
 
     def test_invalid_keys_and_non_string_fragments_fail_closed(self):
         for key, value in (("unrelated", ""), ("policy.fixture.yaml", ""),

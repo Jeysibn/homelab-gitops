@@ -7,7 +7,6 @@ import json
 import argparse
 import csv
 import fnmatch
-import io
 import os
 import subprocess
 import re
@@ -216,8 +215,17 @@ def compose_policy(data: dict) -> str:
 def validate_composed_policy(data: dict) -> None:
     inheritance = {}
     try:
-        for row in csv.reader(io.StringIO(compose_policy(data)), skipinitialspace=True, strict=True):
-            if not row or not any(field.strip() for field in row) or row[0].lstrip().startswith("#"):
+        # Argo CD v3.5.1 splits policy text into physical lines, trims each
+        # line, and recognizes comments before passing the line to CSV parsing.
+        for raw_line in compose_policy(data).split("\n"):
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            rows = list(csv.reader([line], skipinitialspace=True, strict=True))
+            if len(rows) != 1:
+                raise VerificationFailure("RBAC_POLICY_VALIDATION")
+            row = rows[0]
+            if not row or not any(field.strip() for field in row):
                 continue
             row = [field.strip() for field in row]
             if any(not field or "," in field or any(ord(char) < 32 for char in field) for field in row):
