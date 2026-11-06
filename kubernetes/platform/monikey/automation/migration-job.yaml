@@ -15,8 +15,8 @@ spec:
       labels:
         app.kubernetes.io/name: monikey-db-migration
       annotations:
-        monikey.jeysibn.io/release-sha: __IMAGE_SHA__
-        monikey.jeysibn.io/release-run: __RUN_ID__
+        monikey.jeysibn.io/release-sha: "__IMAGE_SHA__"
+        monikey.jeysibn.io/release-run: "__RUN_ID__"
     spec:
       automountServiceAccountToken: false
       restartPolicy: Never
