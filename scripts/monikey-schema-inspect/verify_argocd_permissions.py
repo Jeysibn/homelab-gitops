@@ -30,7 +30,21 @@ SUPPORTED_RESOURCES = frozenset({
 })
 RBAC_EVIDENCE_MAX_AGE_SECONDS = 15 * 60
 
-POLICY_FRAGMENT_KEY = re.compile(r"policy\.[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*\.csv\Z")
+CONFIGMAP_KEY = re.compile(r"[-._a-zA-Z0-9]+\Z")
+
+
+def valid_configmap_key(key: object) -> bool:
+    return isinstance(key, str) and len(key) <= 253 and CONFIGMAP_KEY.fullmatch(key) is not None
+
+
+def is_policy_fragment_key(key: object) -> bool:
+    # Match Argo CD v3.5.1 PolicyCSV: policy.*.csv, excluding policy.csv.
+    return (
+        isinstance(key, str)
+        and key.startswith("policy.")
+        and key.endswith(".csv")
+        and key != "policy.csv"
+    )
 
 
 class VerificationFailure(ValueError):
@@ -174,8 +188,9 @@ def validate_rbac_evidence(
         or not metadata.get("uid")
         or not metadata.get("resourceVersion")
         or not isinstance(data, dict)
+        or any(not valid_configmap_key(key) for key in data)
         or any(key not in {"policy.csv", "policy.default", "policy.matchMode", "scopes"}
-               and not POLICY_FRAGMENT_KEY.fullmatch(key) for key in data)
+               and not is_policy_fragment_key(key) for key in data)
         or any(not isinstance(value, str) for value in data.values())
         or data.get("policy.matchMode", "glob") != "glob"
         or not isinstance(data.get("policy.csv", ""), str)
@@ -194,7 +209,7 @@ def validate_rbac_evidence(
 def compose_policy(data: dict) -> str:
     # Argo CD v3.5.1 PolicyCSV: main first, then overlay keys lexicographically.
     return data.get("policy.csv", "") + "".join(
-        "\n" + data[key] for key in sorted(data) if POLICY_FRAGMENT_KEY.fullmatch(key)
+        "\n" + data[key] for key in sorted(data) if is_policy_fragment_key(key)
     )
 
 

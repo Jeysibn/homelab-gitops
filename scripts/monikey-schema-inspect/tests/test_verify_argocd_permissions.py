@@ -271,9 +271,41 @@ class VerifyArgocdPermissionsDiagnosticTests(unittest.TestCase):
         self.assertEqual(caught.exception.category, "RBAC_EVIDENCE_INVALID")
 
     def test_composition_order_main_then_sorted_fragments(self):
-        data = {"policy.z.csv": "last", "policy.csv": "main", "policy.a.csv": "first"}
-        self.assertEqual(verifier.compose_policy(data), "main\nfirst\nlast")
+        data = {
+            "policy.z.csv": "last",
+            "policy.csv": "main",
+            "policy.a.csv": "first",
+            "policy..csv": "empty-name",
+            "policy.a...b.csv": "multiple-dots",
+        }
+        self.assertEqual(
+            verifier.compose_policy(data),
+            "main\nempty-name\nmultiple-dots\nfirst\nlast",
+        )
         self.assertEqual(verifier.compose_policy({"policy.a.csv": "only"}), "\nonly")
+
+    def test_composition_matches_v351_policycsv_selector(self):
+        data = {
+            "policy.csv": "main",
+            "policy..csv": "empty-name",
+            "policy.a...b.csv": "multiple-dots",
+            "policy.z.csv": "last",
+            "policy.default": "not a fragment",
+            "policy.ignored.yaml": "not a fragment",
+            "xpolicy.not-a-fragment.csv": "not a fragment",
+        }
+        upstream_selected = sorted(
+            key for key in data
+            if key.startswith("policy.") and key.endswith(".csv") and key != "policy.csv"
+        )
+        upstream_composition = data["policy.csv"] + "".join(
+            "\n" + data[key] for key in upstream_selected
+        )
+        self.assertEqual(
+            verifier.compose_policy(data),
+            upstream_composition,
+        )
+        self.assertEqual(upstream_selected, ["policy..csv", "policy.a...b.csv", "policy.z.csv"])
 
     def test_standard_policy_and_live_permission_probes_accept_valid_evidence(self):
         self.write_evidence(evidence_document(
@@ -303,8 +335,26 @@ class VerifyArgocdPermissionsDiagnosticTests(unittest.TestCase):
         self.write_evidence(document)
         self.validate()
 
+        safe_policy = (
+            "p, role:fragment-reader, applications, get, "
+            "default/monikey-inspection-access, allow"
+        )
+        self.write_evidence(evidence_document(extra_data={
+            "policy..csv": safe_policy,
+            "policy.fragment...two.csv": safe_policy,
+        }))
+        self.validate()
+
+    def test_unsafe_grant_in_policy_dot_csv_is_classified_as_unsafe(self):
+        self.write_evidence(evidence_document(extra_data={
+            "policy..csv": "p, role:unrelated, applications, get, */*, allow",
+        }))
+        with self.assertRaises(verifier.VerificationFailure) as caught:
+            self.validate()
+        self.assertEqual(caught.exception.category, "RBAC_POLICY_UNSAFE")
+
     def test_invalid_keys_and_non_string_fragments_fail_closed(self):
-        for key, value in (("unrelated", ""), ("policy..csv", ""),
+        for key, value in (("unrelated", ""), ("policy.fixture.yaml", ""),
                            ("policy.bad/.csv", ""), ("policy.fixture.csv", None)):
             self.write_evidence(evidence_document(extra_data={key: value}))
             with self.subTest(key=key), self.assertRaises(verifier.VerificationFailure):

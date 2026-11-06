@@ -198,15 +198,24 @@ class CaptureArgocdRbacEvidenceTests(unittest.TestCase):
             self.assertEqual(out.getvalue(), "::error::Argo CD RBAC evidence capture failed: OUTPUT_WRITE.\n")
 
     def test_all_supported_fragments_are_preserved(self):
-        data = {"policy.github-actions.csv": "fixture", "policy.github-actions-project.csv": "other"}
+        data = {
+            "policy..csv": "empty-name fragment",
+            "policy.github-actions.csv": "fixture",
+            "policy.github-actions-project.csv": "other",
+            "policy.github..actions.csv": "consecutive dots",
+        }
         captured = capture.rbac_evidence(kubernetes_object("argocd-rbac-cm", data=data))["data"]
-        self.assertEqual(captured, data)
+        self.assertEqual(captured, dict(sorted(data.items())))
         self.assertEqual(list(captured), sorted(data))
 
     def test_resource_specific_diagnostics(self):
         with self.assertRaisesRegex(capture.EvidenceError, "APP_PROJECT_VALIDATION"):
             capture.project_evidence(kubernetes_object("wrong-name"))
-        for data in ({"policy..csv": ""}, {"policy.x.csv": None}, {"unrelated": ""}):
+        for data in (
+            {"policy.fixture.yaml": "ignored by Argo"},
+            {"policy.bad/.csv": "invalid ConfigMap key"},
+            {"policy.x.csv": None},
+        ):
             with self.assertRaisesRegex(capture.EvidenceError, "RBAC_CONFIGMAP_VALIDATION"):
                 capture.rbac_evidence(kubernetes_object("argocd-rbac-cm", data=data))
 

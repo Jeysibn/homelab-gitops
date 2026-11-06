@@ -15,7 +15,20 @@ from pathlib import Path
 
 ROLE_NAME = "monikey-inspection-reader"
 RBAC_DATA_KEYS = {"policy.csv", "policy.default", "policy.matchMode", "scopes"}
-POLICY_FRAGMENT_KEY = re.compile(r"policy\.[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*\.csv\Z")
+CONFIGMAP_KEY = re.compile(r"[-._a-zA-Z0-9]+\Z")
+
+
+def valid_configmap_key(key: object) -> bool:
+    return isinstance(key, str) and len(key) <= 253 and CONFIGMAP_KEY.fullmatch(key) is not None
+
+
+def is_policy_fragment_key(key: object) -> bool:
+    return (
+        isinstance(key, str)
+        and key.startswith("policy.")
+        and key.endswith(".csv")
+        and key != "policy.csv"
+    )
 
 
 class EvidenceError(ValueError):
@@ -78,7 +91,8 @@ def rbac_evidence(document: dict) -> dict:
         or not metadata.get("uid")
         or not metadata.get("resourceVersion")
         or not isinstance(data, dict)
-        or any(key not in RBAC_DATA_KEYS and not POLICY_FRAGMENT_KEY.fullmatch(key) for key in data)
+        or any(not valid_configmap_key(key) for key in data)
+        or any(key not in RBAC_DATA_KEYS and not is_policy_fragment_key(key) for key in data)
         or any(not isinstance(value, str) for value in data.values())
     ):
         raise EvidenceError("RBAC_CONFIGMAP_VALIDATION")
