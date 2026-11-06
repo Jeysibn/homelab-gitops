@@ -56,8 +56,9 @@ class CaptureArgocdRbacEvidenceTests(unittest.TestCase):
             capture.capture("trusted-context", "https://cluster.invalid:6443", output, run=runner)
             document = json.loads(output.read_text(encoding="utf-8"))
             self.assertEqual(output.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(document["schemaVersion"], 2)
             self.assertEqual(len(commands), 4)
-            self.assertEqual(document["appProject"]["spec"]["roles"], [role])
+            self.assertEqual(document["appProject"]["spec"]["roles"], [role, {"name": "unrelated"}])
             self.assertEqual(document["configMap"]["data"], config_map["data"])
             self.assertEqual(document["cluster"], {
                 "context": "trusted-context", "apiServer": "https://cluster.invalid:6443"
@@ -82,14 +83,19 @@ class CaptureArgocdRbacEvidenceTests(unittest.TestCase):
             with self.subTest(data="[withheld]"), self.assertRaises(capture.EvidenceError):
                 capture.rbac_evidence(kubernetes_object("argocd-rbac-cm", data=data))
 
-    def test_project_capture_omits_token_status_and_keeps_only_target_role(self):
+    def test_project_capture_omits_tokens_and_keeps_all_roles(self):
         project = kubernetes_object(
             "default",
-            roles=[{"name": "monikey-inspection-reader"}, {"name": "other-role"}],
+            roles=[{"name": "monikey-inspection-reader", "jwtTokens": [{"id": "private"}]},
+                   {"name": "other-role", "policies": ["p, other, applications, sync, *, allow"],
+                    "groups": ["other-group"]}],
         )
         output = capture.project_evidence(project)
         self.assertEqual([item["name"] for item in output["spec"]["roles"]],
-                         ["monikey-inspection-reader"])
+                         ["monikey-inspection-reader", "other-role"])
+        self.assertNotIn("jwtTokens", json.dumps(output))
+        self.assertEqual(output["spec"]["roles"][1]["groups"], ["other-group"])
+        self.assertEqual(output["spec"]["roles"][1]["policies"], project["spec"]["roles"][1]["policies"])
         self.assertNotIn("status", output)
 
     def test_existing_output_is_never_overwritten_for_either_owner(self):

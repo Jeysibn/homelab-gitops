@@ -71,8 +71,9 @@ PERMISSION_CHECKS = [
     # application-read access from global roles or policy.default.
     ("get", "applications", "*/*", "no"),
     # Project reads can expose project destinations, source repositories, and
-    # role configuration; this identity has no project-read permission.
+    # role configuration. Wildcard denial does not prove exact-project denial.
     ("get", "projects", "*", "no"),
+    ("get", "projects", "default", "no"),
     ("create", "applications", APPLICATION_OBJECT, "no"),
     ("update", "applications", APPLICATION_OBJECT, "no"),
     ("delete", "applications", APPLICATION_OBJECT, "no"),
@@ -156,6 +157,10 @@ def validate_rbac_evidence(
     if (captured_at - now).total_seconds() > 60:
         raise VerificationFailure("RBAC_EVIDENCE_INVALID")
 
+    # Version 1 omitted all other roles and cannot establish isolation.
+    if evidence.get("schemaVersion") != 2:
+        raise VerificationFailure("RBAC_EVIDENCE_INVALID")
+
     cluster = evidence.get("cluster") if isinstance(evidence, dict) else None
     if (
         not isinstance(cluster, dict)
@@ -179,8 +184,6 @@ def validate_rbac_evidence(
         or not isinstance(project_spec.get("roles"), list)
     ):
         raise VerificationFailure("APP_PROJECT_VALIDATION")
-    if require_project_role:
-        validate_project_policy(app_project)
 
     config_map = evidence.get("configMap") if isinstance(evidence, dict) else None
     metadata = config_map.get("metadata") if isinstance(config_map, dict) else None
@@ -206,7 +209,7 @@ def validate_rbac_evidence(
     if data.get("policy.default", "").strip():
         raise VerificationFailure("RBAC_POLICY_UNSAFE")
 
-    validate_composed_policy(data)
+    validate_composed_policy(data, app_project, require_project_role=require_project_role)
     return evidence
 
 
@@ -283,13 +286,12 @@ def parse_argocd_policy_line(line: str) -> list[str]:
             return fields
 
 
-def validate_composed_policy(data: dict) -> None:
-    inheritance = {}
-    has_authorized_permission = False
+def policy_records(policy: str) -> list[list[str]]:
+    rows = []
     try:
         # Argo CD v3.5.1 splits policy text into physical lines, trims each
         # line, and recognizes comments before passing the line to CSV parsing.
-        for raw_line in compose_policy(data).split("\n"):
+        for raw_line in policy.split("\n"):
             line = trim_go_space(raw_line)
             if not line or line.startswith("#"):
                 continue
@@ -302,7 +304,7 @@ def validate_composed_policy(data: dict) -> None:
                     raise VerificationFailure("RBAC_POLICY_VALIDATION")
                 if row[2] in {"role:admin", "role:readonly"}:
                     raise VerificationFailure("RBAC_POLICY_UNSAFE")
-                inheritance.setdefault(row[1], set()).add(row[2])
+                rows.append(row)
                 continue
             if row[0] != "p" or len(row) != 6 or row[5] not in {"allow", "deny"}:
                 raise VerificationFailure("RBAC_POLICY_VALIDATION")
@@ -313,76 +315,138 @@ def validate_composed_policy(data: dict) -> None:
                 raise VerificationFailure("RBAC_POLICY_VALIDATION")
             if action not in SUPPORTED_ACTIONS and not action.startswith(("update/", "delete/", "action/")) and "*" not in action:
                 raise VerificationFailure("RBAC_POLICY_VALIDATION")
-            if row[5] == "deny":
-                continue
-            # Only the dedicated identity may receive the one intended read.
-            # Scanning all fragments and rejecting other subjects prevents role
-            # mappings from transferring even this permission to other users.
-            if (action != "get" or resource != "applications"
-                    or row[4] != APPLICATION_OBJECT
-                    or row[1] != EXPECTED_USERNAME):
-                raise VerificationFailure("RBAC_POLICY_UNSAFE")
-            has_authorized_permission = True
+            rows.append(row)
     except PolicyCSVError as error:
         raise VerificationFailure("RBAC_POLICY_VALIDATION") from error
-    visiting, visited = set(), set()
-    def visit(subject):
-        if subject in visiting:
-            raise VerificationFailure("RBAC_POLICY_VALIDATION")
-        if subject in visited:
-            return
-        visiting.add(subject)
-        for parent in inheritance.get(subject, ()):
-            visit(parent)
-        visiting.remove(subject)
-        visited.add(subject)
-    for subject in inheritance:
-        visit(subject)
-    # A grouping edge into the authorized identity makes its permission
-    # available to the source identity, including through multi-hop chains.
-    def inherits_authorized_identity(subject):
-        pending, visited = [subject], set()
-        while pending:
-            current = pending.pop()
-            if current == EXPECTED_USERNAME:
-                return True
-            if current not in visited:
-                visited.add(current)
-                pending.extend(inheritance.get(current, ()))
-        return False
-
-    if has_authorized_permission and any(
-        subject != EXPECTED_USERNAME and inherits_authorized_identity(subject)
-        for subject in inheritance
-    ):
-        raise VerificationFailure("RBAC_POLICY_UNSAFE")
+    return rows
 
 
-def validate_project_policy(project: object) -> None:
+def project_policy_records(project: object, require_inspection: bool = True) -> tuple[list[list[str]], list[list[str]]]:
+    """Compose all roles as v3.5.1 ProjectPoliciesString does, including groups.
+
+    Return explicit and implicit records separately: upstream project reads are
+    real permissions, but are NOT part of the approved inspection contract.
+    """
     try:
         if isinstance(project, str):
             project = json.loads(project)
         metadata = project.get("metadata")
-        roles = project.get("spec", {}).get("roles", [])
+        roles = project.get("spec", {}).get("roles")
     except (json.JSONDecodeError, AttributeError, TypeError) as error:
         raise VerificationFailure("APP_PROJECT_VALIDATION") from error
-    if (
-        not isinstance(project, dict)
-        or not isinstance(metadata, dict)
-        or metadata.get("name") != "default"
-        or metadata.get("namespace") != "argocd"
-        or not metadata.get("uid")
-        or not metadata.get("resourceVersion")
-    ):
+    if (not isinstance(metadata, dict) or metadata.get("name") != "default"
+            or metadata.get("namespace") != "argocd" or not metadata.get("uid")
+            or not metadata.get("resourceVersion") or not isinstance(roles, list)):
         raise VerificationFailure("APP_PROJECT_VALIDATION")
-    if not isinstance(roles, list):
+    names, explicit, implicit = set(), [], []
+    for role in roles:
+        if not isinstance(role, dict):
+            raise VerificationFailure("APP_PROJECT_VALIDATION")
+        name = role.get("name")
+        # Conservative literal identifiers: reject CSV injection, ambiguous
+        # project-token subjects and unsupported role names rather than guess.
+        if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", name) or name in names:
+            raise VerificationFailure("APP_PROJECT_VALIDATION")
+        names.add(name)
+        policies, groups = role.get("policies", []), role.get("groups", [])
+        policies = [] if policies is None else policies
+        groups = [] if groups is None else groups
+        if (not isinstance(policies, list) or not all(isinstance(p, str) for p in policies)
+                or not isinstance(groups, list) or not all(isinstance(g, str) for g in groups)):
+            raise VerificationFailure("APP_PROJECT_VALIDATION")
+        subject = f"proj:default:{name}"
+        implicit.append(["p", subject, "projects", "get", "default", "allow"])
+        explicit.extend(policy_records("\n".join(policies)))
+        for group in groups:
+            # ProjectPoliciesString interpolates groups directly into CSV.
+            # Accept literal, unambiguous values only; Casbin g is exact equality.
+            if (not group or any(c in GO_UNICODE_WHITESPACE or c in ',"' or ord(c) < 32 for c in group)):
+                raise VerificationFailure("RBAC_POLICY_UNSAFE")
+            explicit.extend(policy_records(f"g, {group}, {subject}"))
+        if name == "monikey-inspection-reader" and policies != [EXPECTED_PROJECT_POLICY]:
+            raise VerificationFailure("RBAC_POLICY_UNSAFE")
+    if require_inspection and "monikey-inspection-reader" not in names:
         raise VerificationFailure("APP_PROJECT_VALIDATION")
-    matches = [role for role in roles if isinstance(role, dict) and role.get("name") == "monikey-inspection-reader"]
-    if len(matches) != 1:
-        raise VerificationFailure("APP_PROJECT_VALIDATION")
-    role = matches[0]
-    if role.get("policies") != [EXPECTED_PROJECT_POLICY] or role.get("groups") not in ([], None):
-        raise VerificationFailure("APP_PROJECT_VALIDATION")
+    return explicit, implicit
+
+
+def validate_composed_policy(
+    data: dict, project: object = None, *, require_project_role: bool = True,
+) -> frozenset[tuple[str, ...]]:
+    """Validate isolation and return a conservative upper bound of allow grants.
+
+    Denies never excuse unsafe inheritance or additional explicit allows.
+    This is not approval of the strict contract: the CLI gate rejects the
+    separately modeled upstream implicit project read.
+    """
+    global_rows = policy_records(compose_policy(data))
+    project_rows, implicit_rows = ([], []) if project is None else project_policy_records(project, require_project_role)
+    intended = ["applications", "get", APPLICATION_OBJECT]
+    # Keep the existing exact global allowlist, even for isolated subjects.
+    for row in global_rows:
+        if row[0] == "p" and row[5] == "allow" and (row[1] != EXPECTED_USERNAME or row[2:5] != intended):
+            raise VerificationFailure("RBAC_POLICY_UNSAFE")
+    inheritance, inheritors = {}, {}
+    for row in global_rows + project_rows:
+        if row[0] == "g":
+            inheritance.setdefault(row[1], set()).add(row[2])
+            inheritors.setdefault(row[2], set()).add(row[1])
+    # Iterative topological traversal detects cycles without recursion limits.
+    nodes = set(inheritance) | {p for parents in inheritance.values() for p in parents}
+    incoming = dict.fromkeys(nodes, 0)
+    for parents in inheritance.values():
+        for parent in parents:
+            incoming[parent] += 1
+    pending = [node for node in nodes if incoming[node] == 0]
+    visited = 0
+    while pending:
+        current = pending.pop()
+        visited += 1
+        for parent in inheritance.get(current, ()):
+            incoming[parent] -= 1
+            if incoming[parent] == 0:
+                pending.append(parent)
+    if visited != len(nodes):
+        raise VerificationFailure("RBAC_POLICY_VALIDATION")
+
+    def reachable(subject, edges):
+        pending, reached = [subject], set()
+        while pending:
+            current = pending.pop()
+            if current not in reached:
+                reached.add(current)
+                pending.extend(edges.get(current, ()))
+        return reached
+
+    # Casbin's g relation is literal, reflexive and transitive (no glob subject
+    # matching). Check every edge, even when there is NO global p record.
+    # Unbounded reachability is deliberately stricter than Casbin's depth cap.
+    if reachable(EXPECTED_USERNAME, inheritors) - {EXPECTED_USERNAME}:
+        raise VerificationFailure("RBAC_POLICY_UNSAFE")
+    effective_subjects = reachable(EXPECTED_USERNAME, inheritance)
+    for row in global_rows + project_rows:
+        if row[0] == "p" and row[5] == "allow" and row[1] in effective_subjects and row[2:5] != intended:
+            raise VerificationFailure("RBAC_POLICY_UNSAFE")
+    # Every implicit row in this captured project grants exactly projects/get/
+    # default. It is unavoidable for the inspection role, including through
+    # cross-role inheritance. The CLI contract gate below rejects that grant.
+    return frozenset(
+        tuple(row[2:5]) for row in global_rows + project_rows + implicit_rows
+        if row[0] == "p" and row[5] == "allow" and row[1] in effective_subjects
+    )
+
+
+def validate_project_policy(project: object) -> None:
+    project_policy_records(project)
+
+
+def require_strict_permission_contract() -> None:
+    # v3.5.1 always supplies projects/get/default for this AppProject role.
+    # Deny precedence could suppress it, but approving a compensating global
+    # policy is a separate security decision, outside this verifier contract.
+    # No finite (or mocked) token probes approve that contract change.
+    # Also block pre-provisioning --check-rbac-evidence before any role writes.
+    raise VerificationFailure("RBAC_IMPLICIT_PROJECT_READ_BLOCKER")
 
 
 def verify(
@@ -424,7 +488,7 @@ def verify(
             project_output = Path(project_json_file).read_text(encoding="utf-8")
         except OSError as error:
             raise VerificationFailure("RBAC_EVIDENCE_UNAVAILABLE") from error
-        validate_project_policy(project_output)
+        validate_composed_policy(evidence["configMap"]["data"], project_output)
     else:
         validate_project_policy(evidence["appProject"])
 
@@ -440,6 +504,8 @@ def verify(
         if actual != expected:
             category = "REQUIRED_PERMISSION_DENIED" if expected == "yes" else "UNEXPECTED_PERMISSION_ALLOWED"
             raise VerificationFailure(category, check_number, expected)
+
+    require_strict_permission_contract()
 
 
 def main() -> int:
@@ -459,6 +525,7 @@ def main() -> int:
                 expected_context=args.expected_kubernetes_context,
                 expected_api_server=args.expected_kubernetes_api_server,
             )
+            require_strict_permission_contract()
             print("Fresh global Argo CD RBAC evidence verified.")
             return 0
         verify(

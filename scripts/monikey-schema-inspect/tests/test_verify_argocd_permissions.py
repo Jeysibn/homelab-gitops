@@ -19,6 +19,7 @@ def evidence_document(policy_csv="", *, project_roles=None, captured_at=None, ex
     data = {"policy.csv": policy_csv}
     data.update(extra_data or {})
     return {
+        "schemaVersion": 2,
         "capturedAt": captured_at or datetime.now(timezone.utc).isoformat(),
         "cluster": {"context": EXPECTED_CONTEXT, "apiServer": EXPECTED_API_SERVER},
         "appProject": {
@@ -211,7 +212,7 @@ class VerifyArgocdPermissionsDiagnosticTests(unittest.TestCase):
         cases = (
             {"name": "monikey-inspection-reader", "policies": [verifier.EXPECTED_PROJECT_POLICY],
              "groups": ["unexpected-group"]},
-            {"name": "monikey-inspection-reader", "policies": [verifier.EXPECTED_PROJECT_POLICY, "extra"],
+            {"name": "monikey-inspection-reader", "policies": [verifier.EXPECTED_PROJECT_POLICY, "p, proj:default:monikey-inspection-reader, projects, get, default, allow"],
              "groups": []},
         )
         for role in cases:
@@ -219,9 +220,9 @@ class VerifyArgocdPermissionsDiagnosticTests(unittest.TestCase):
                 self.write_evidence(evidence_document(project_roles=[role]))
                 with self.assertRaises(verifier.VerificationFailure) as caught:
                     self.validate()
-                self.assertEqual(caught.exception.category, "APP_PROJECT_VALIDATION")
+                self.assertEqual(caught.exception.category, "RBAC_POLICY_UNSAFE")
 
-        duplicate = cases[1]
+        duplicate = {"name": "monikey-inspection-reader", "policies": [verifier.EXPECTED_PROJECT_POLICY], "groups": []}
         self.write_evidence(evidence_document(project_roles=[duplicate, duplicate]))
         with self.assertRaises(verifier.VerificationFailure) as caught:
             self.validate()
@@ -315,7 +316,7 @@ class VerifyArgocdPermissionsDiagnosticTests(unittest.TestCase):
         )
         self.assertEqual(upstream_selected, ["policy..csv", "policy.a...b.csv", "policy.z.csv"])
 
-    def test_standard_policy_and_live_permission_probes_accept_valid_evidence(self):
+    def test_isolated_policy_runs_all_probes_but_strict_contract_still_blocks(self):
         self.write_evidence(evidence_document(
             "p, proj:default:monikey-inspection-reader, applications, get, "
             "default/monikey-inspection-access, allow"
@@ -327,7 +328,8 @@ class VerifyArgocdPermissionsDiagnosticTests(unittest.TestCase):
             calls.append(command)
             return base_runner(command, **kwargs)
 
-        self.verify(recording_runner)
+        with self.assertRaisesRegex(verifier.VerificationFailure, "RBAC_IMPLICIT_PROJECT_READ_BLOCKER"):
+            self.verify(recording_runner)
         self.assertEqual(sum("can-i" in command for command in calls), len(verifier.PERMISSION_CHECKS))
         self.assertEqual(sum("get-user-info" in command for command in calls), 1)
 

@@ -13,7 +13,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 
-ROLE_NAME = "monikey-inspection-reader"
 RBAC_DATA_KEYS = {"policy.csv", "policy.default", "policy.matchMode", "scopes"}
 CONFIGMAP_KEY = re.compile(r"[-._a-zA-Z0-9]+\Z")
 
@@ -66,10 +65,12 @@ def project_evidence(document: dict) -> dict:
         or not isinstance(spec.get("roles", []), list)
     ):
         raise EvidenceError("APP_PROJECT_VALIDATION")
-    roles = [
-        role for role in spec.get("roles", [])
-        if isinstance(role, dict) and role.get("name") == ROLE_NAME
-    ]
+    # Retain the complete authorization collection, but never JWT metadata.
+    roles = []
+    for role in spec.get("roles", []):
+        if not isinstance(role, dict):
+            raise EvidenceError("APP_PROJECT_VALIDATION")
+        roles.append({key: role[key] for key in ("name", "policies", "groups") if key in role})
     return {
         "metadata": {
             "name": metadata["name"],
@@ -175,6 +176,7 @@ def capture(context: str, api_server: str, output: Path, run=subprocess.run) -> 
          "configmap", "argocd-rbac-cm", "--namespace", "argocd", "-o", "json"], run, stage="RBAC_CONFIGMAP_READ"
     )
     evidence = {
+        "schemaVersion": 2,
         "capturedAt": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "cluster": {"context": context, "apiServer": api_server},
         "appProject": project_evidence(project),
