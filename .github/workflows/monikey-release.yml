@@ -80,9 +80,7 @@ jobs:
               raise SystemExit("Expected one API and one frontend image reference")
           app.write_text(text)
           migration = Path("kubernetes/platform/monikey/manifests/migration-runner.yaml")
-          lines = migration.read_text().splitlines()
-          lines = ["  MONIKEY_MIGRATION_ADOPT: \\\"" + str(adopt).lower() + "\\\"" if line.strip().startswith("MONIKEY_MIGRATION_ADOPT:") else line for line in lines]
-          text = "\\n".join(lines) + "\\n"
+          text = migration.read_text().replace('MONIKEY_MIGRATION_ADOPT: "false"', f'MONIKEY_MIGRATION_ADOPT: "{str(adopt).lower()}"')
           text = re.sub(r"(monikey-v2-api:)sha-[0-9a-f]{40}", lambda m: m.group(1) + image_tag, text)
           migration.write_text(text)
           PY
