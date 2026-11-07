@@ -34,7 +34,7 @@ jobs:
       MONIKEY_BACKUP_PASSPHRASE: ${{ secrets.MONIKEY_BACKUP_PASSPHRASE }}
 
   adoption-approval:
-    if: github.event_name == 'workflow_dispatch' && inputs.adopt_existing_schema
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.adopt_existing_schema == 'true'
     needs: backup
     runs-on: ubuntu-latest
     environment: monikey-migration-adoption
@@ -61,8 +61,8 @@ jobs:
       - name: Validate and promote paired images
         id: release
         env:
-          IMAGE_SHA: ${{ github.event.client_payload.image_sha || inputs.image_sha }}
-          ADOPT: ${{ inputs.adopt_existing_schema || false }}
+          IMAGE_SHA: ${{ github.event.client_payload.image_sha || github.event.inputs.image_sha }}
+          ADOPT: ${{ github.event.inputs.adopt_existing_schema || false }}
         shell: bash
         run: |
           set -euo pipefail
