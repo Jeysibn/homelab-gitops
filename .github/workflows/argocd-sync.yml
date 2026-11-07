@@ -34,6 +34,15 @@ on:
         required: false
         type: string
         default: ''
+    secrets:
+      TS_OAUTH_CLIENT_ID:
+        required: true
+      TS_OAUTH_SECRET:
+        required: true
+      ARGOCD_SERVER:
+        required: true
+      ARGOCD_AUTH_TOKEN:
+        required: true
 
 permissions:
   contents: read

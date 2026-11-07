@@ -14,6 +14,15 @@ on:
       confirm_live_backup:
         required: true
         type: boolean
+    secrets:
+      TS_OAUTH_CLIENT_ID:
+        required: true
+      TS_OAUTH_SECRET:
+        required: true
+      MONIKEY_BACKUP_KUBECONFIG_B64:
+        required: true
+      MONIKEY_BACKUP_PASSPHRASE:
+        required: true
 
 permissions:
   contents: read
