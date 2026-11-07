@@ -9,6 +9,7 @@ metadata:
     argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
 data:
   MONIKEY_MIGRATION_ADOPT: "false"
+  MONIKEY_MIGRATION_APPLY: "false"
 
 ---
 apiVersion: batch/v1
