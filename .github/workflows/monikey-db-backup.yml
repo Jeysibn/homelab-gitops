@@ -9,6 +9,12 @@ on:
         type: boolean
         default: false
 
+  workflow_call:
+    inputs:
+      confirm_live_backup:
+        required: true
+        type: boolean
+
 permissions:
   contents: read
 
