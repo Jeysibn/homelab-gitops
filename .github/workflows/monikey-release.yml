@@ -80,7 +80,57 @@ jobs:
               raise SystemExit("Expected one API and one frontend image reference")
           app.write_text(text)
           migration = Path("kubernetes/platform/monikey/manifests/migration-runner.yaml")
-          text = migration.read_text().replace('MONIKEY_MIGRATION_ADOPT: "false"', f'MONIKEY_MIGRATION_ADOPT: "{str(adopt).lower()}"')
+          text, adoption_count = re.subn(r'(?m)^  MONIKEY_MIGRATION_ADOPT: "(?:true|false)"
+          text = re.sub(r"(monikey-v2-api:)sha-[0-9a-f]{40}", lambda m: m.group(1) + image_tag, text)
+          migration.write_text(text)
+          PY
+          git diff --check
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add kubernetes/platform/monikey/manifests/application.yaml kubernetes/platform/monikey/manifests/migration-runner.yaml
+          git commit -m "deploy(monikey): promote sha-$IMAGE_SHA"
+          git push origin HEAD:main
+          echo "image_sha=$IMAGE_SHA" >> "$GITHUB_OUTPUT"
+          echo "adoption=$ADOPT" >> "$GITHUB_OUTPUT"
+
+  sync:
+    needs: promote
+    uses: ./.github/workflows/argocd-sync.yml
+    with:
+      application: monikey
+      prune: false
+      insecure: false
+      image_sha: ${{ needs.promote.outputs.image_sha }}
+    secrets:
+      TS_OAUTH_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+      TS_OAUTH_SECRET: ${{ secrets.TS_OAUTH_SECRET }}
+      ARGOCD_SERVER: ${{ secrets.ARGOCD_SERVER }}
+      ARGOCD_AUTH_TOKEN: ${{ secrets.ARGOCD_AUTH_TOKEN }}
+
+  finish-adoption:
+    if: needs.promote.outputs.adoption == 'true' && needs.sync.result == 'success'
+    needs: [promote, sync]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - name: Disable one-time schema adoption
+        run: |
+          set -euo pipefail
+          sed -i 's/MONIKEY_MIGRATION_ADOPT: "true"/MONIKEY_MIGRATION_ADOPT: "false"/' kubernetes/platform/monikey/manifests/migration-runner.yaml
+          git diff --check
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add kubernetes/platform/monikey/manifests/migration-runner.yaml
+          git commit -m 'chore(monikey): close initial schema adoption gate'
+          git push origin HEAD:main
+          echo 'Adoption mode disabled after successful migration and health checks.' >> "$GITHUB_STEP_SUMMARY"
+, lambda m: f'  MONIKEY_MIGRATION_ADOPT: "{str(adopt).lower()}"', migration.read_text())
+          if adoption_count != 1:
+              raise SystemExit("Expected exactly one migration adoption setting")
           text = re.sub(r"(monikey-v2-api:)sha-[0-9a-f]{40}", lambda m: m.group(1) + image_tag, text)
           migration.write_text(text)
           PY
