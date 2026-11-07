@@ -158,11 +158,13 @@ any restore that replaces existing records.
 ## Automated release setup
 
 Set the MoniKey repository secret `HOMELAB_GITOPS_DISPATCH_TOKEN` to a
-fine-grained token limited to this repository with permission to dispatch
-repository events. The existing Tailscale, backup kubeconfig, backup passphrase,
+fine-grained token limited to this repository with `Contents: write`
+permission for the repository-dispatch endpoint. The existing Tailscale, backup kubeconfig, backup passphrase,
 and Argo CD secrets remain configured here; no database credentials are moved
 to MoniKey. Create the protected Environment `monikey-migration-adoption` and
-require owner approval. Routine releases then need no manual homelab command.
+require owner approval. Configure repository rules so the release workflow can
+commit its paired image update to `main`; otherwise its promotion push will be
+rejected. Routine releases then need no manual homelab command.
 
 ## Rollback
 
