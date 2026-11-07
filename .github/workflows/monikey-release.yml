@@ -1,0 +1,196 @@
+name: MoniKey release and initial adoption
+
+on:
+  repository_dispatch:
+    types: [monikey-release]
+  workflow_dispatch:
+    inputs:
+      image_sha:
+        description: Full 40-character MoniKey commit SHA (required for one-time adoption)
+        required: true
+        type: string
+      adopt_existing_schema:
+        description: One-time adoption after verified backup and protected approval
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: monikey-release
+  cancel-in-progress: false
+
+jobs:
+  verify-release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Verify current MoniKey main SHA and paired GHCR images
+        env:
+          IMAGE_SHA: ${{ github.event.client_payload.image_sha || github.event.inputs.image_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$IMAGE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo '::error::Expected a full MoniKey commit SHA.'; exit 1; }
+          latest_sha="$(curl --fail --silent --show-error https://api.github.com/repos/Jeysibn/monikey/commits/main | python3 -c 'import json,sys; print(json.load(sys.stdin)["sha"])')"
+          if [[ "$IMAGE_SHA" != "$latest_sha" ]]; then
+            echo "::error::Stale MoniKey release $IMAGE_SHA; current main is $latest_sha."
+            exit 1
+          fi
+          for image in \
+            "ghcr.io/jeysibn/monikey-v2-frontend:sha-$IMAGE_SHA" \
+            "ghcr.io/jeysibn/monikey-v2-api:sha-$IMAGE_SHA"; do
+            docker manifest inspect "$image" > /dev/null
+            printf "Verified %s.\\n" "$image" >> "$GITHUB_STEP_SUMMARY"
+          done
+
+  backup:
+    needs: verify-release
+    uses: ./.github/workflows/monikey-db-backup.yml
+    with:
+      confirm_live_backup: true
+    secrets:
+      TS_OAUTH_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+      TS_OAUTH_SECRET: ${{ secrets.TS_OAUTH_SECRET }}
+      MONIKEY_BACKUP_KUBECONFIG_B64: ${{ secrets.MONIKEY_BACKUP_KUBECONFIG_B64 }}
+      MONIKEY_BACKUP_PASSPHRASE: ${{ secrets.MONIKEY_BACKUP_PASSPHRASE }}
+
+  adoption-approval:
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.adopt_existing_schema == 'true'
+    needs: backup
+    runs-on: ubuntu-latest
+    environment: monikey-migration-adoption
+    steps:
+      - run: echo 'One-time adoption approval follows verified backup.'
+
+  promote:
+    needs: [verify-release, backup, adoption-approval]
+    if: >-
+      always() && needs.verify-release.result == 'success' &&
+      needs.backup.result == 'success' &&
+      needs.adoption-approval.result != 'failure' &&
+      needs.adoption-approval.result != 'cancelled'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    outputs:
+      image_sha: ${{ steps.release.outputs.image_sha }}
+      adoption: ${{ steps.release.outputs.adoption }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - name: Validate and promote paired images
+        id: release
+        env:
+          IMAGE_SHA: ${{ github.event.client_payload.image_sha || github.event.inputs.image_sha }}
+          ADOPT: ${{ github.event.inputs.adopt_existing_schema || false }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$IMAGE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo '::error::Expected a full MoniKey commit SHA.'; exit 1; }
+          latest_sha="$(curl --fail --silent --show-error https://api.github.com/repos/Jeysibn/monikey/commits/main | python3 -c 'import json,sys; print(json.load(sys.stdin)["sha"])')"
+          if [[ "$IMAGE_SHA" != "$latest_sha" ]]; then
+            echo "::error::MoniKey main advanced during backup; refusing stale promotion."
+            exit 1
+          fi
+          python3 - "$IMAGE_SHA" "$ADOPT" <<'PY'
+          from pathlib import Path
+          import re, sys
+          sha, adopt = sys.argv[1], sys.argv[2].lower() == "true"
+          image_tag = f"sha-{sha}"
+          app = Path("kubernetes/platform/monikey/manifests/application.yaml")
+          text = app.read_text()
+          text, api_count = re.subn(r"(monikey-v2-api:)sha-[0-9a-f]{40}", lambda m: m.group(1) + image_tag, text)
+          text, frontend_count = re.subn(r"(monikey-v2-frontend:)sha-[0-9a-f]{40}", lambda m: m.group(1) + image_tag, text)
+          if api_count != 1 or frontend_count != 1:
+              raise SystemExit("Expected one API and one frontend image reference")
+          app.write_text(text)
+
+          migration = Path("kubernetes/platform/monikey/manifests/migration-runner.yaml")
+          migration_text = migration.read_text()
+          migration_text, apply_count = re.subn(
+              r'(?m)^  MONIKEY_MIGRATION_APPLY: "(?:true|false)"$',
+              '  MONIKEY_MIGRATION_APPLY: "true"',
+              migration_text,
+          )
+          if apply_count != 1:
+              raise SystemExit("Expected exactly one migration apply setting")
+          migration_text, adoption_count = re.subn(
+              r'(?m)^  MONIKEY_MIGRATION_ADOPT: "(?:true|false)"$',
+              lambda match: f'  MONIKEY_MIGRATION_ADOPT: "{str(adopt).lower()}"',
+              migration_text,
+          )
+          if adoption_count != 1:
+              raise SystemExit("Expected exactly one migration adoption setting")
+          migration_text, runner_count = re.subn(
+              r"(monikey-v2-api:)sha-[0-9a-f]{40}",
+              lambda m: m.group(1) + image_tag,
+              migration_text,
+          )
+          if runner_count != 1:
+              raise SystemExit("Expected exactly one migration runner image")
+          migration.write_text(migration_text)
+          PY
+          git diff --check
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add kubernetes/platform/monikey/manifests/application.yaml kubernetes/platform/monikey/manifests/migration-runner.yaml
+          git commit -m "deploy(monikey): promote sha-$IMAGE_SHA"
+          git push origin HEAD:main
+          echo "image_sha=$IMAGE_SHA" >> "$GITHUB_OUTPUT"
+          echo "adoption=$ADOPT" >> "$GITHUB_OUTPUT"
+
+  sync:
+    needs: promote
+    uses: ./.github/workflows/argocd-sync.yml
+    with:
+      application: monikey
+      prune: false
+      insecure: false
+      image_sha: ${{ needs.promote.outputs.image_sha }}
+    secrets:
+      TS_OAUTH_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+      TS_OAUTH_SECRET: ${{ secrets.TS_OAUTH_SECRET }}
+      ARGOCD_SERVER: ${{ secrets.ARGOCD_SERVER }}
+      ARGOCD_AUTH_TOKEN: ${{ secrets.ARGOCD_AUTH_TOKEN }}
+
+  finish-release:
+    if: needs.sync.result == 'success'
+    needs: [promote, sync]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - name: Disable schema changes after successful release
+        run: |
+          set -euo pipefail
+          sed -i 's/MONIKEY_MIGRATION_ADOPT: "true"/MONIKEY_MIGRATION_ADOPT: "false"/' kubernetes/platform/monikey/manifests/migration-runner.yaml
+          sed -i 's/MONIKEY_MIGRATION_APPLY: "true"/MONIKEY_MIGRATION_APPLY: "false"/' kubernetes/platform/monikey/manifests/migration-runner.yaml
+          git diff --check
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add kubernetes/platform/monikey/manifests/migration-runner.yaml
+          git commit -m 'chore(monikey): close migration authorization gate'
+          git push origin HEAD:main
+          echo 'Migration and adoption gates disabled after successful migration and health checks.' >> "$GITHUB_STEP_SUMMARY"
+
+  verify-final-sync:
+    needs: [promote, finish-release]
+    uses: ./.github/workflows/argocd-sync.yml
+    with:
+      application: monikey
+      prune: false
+      insecure: false
+      image_sha: ${{ needs.promote.outputs.image_sha }}
+    secrets:
+      TS_OAUTH_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+      TS_OAUTH_SECRET: ${{ secrets.TS_OAUTH_SECRET }}
+      ARGOCD_SERVER: ${{ secrets.ARGOCD_SERVER }}
+      ARGOCD_AUTH_TOKEN: ${{ secrets.ARGOCD_AUTH_TOKEN }}

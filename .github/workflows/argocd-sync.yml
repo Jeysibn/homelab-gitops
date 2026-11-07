@@ -17,6 +17,33 @@ on:
         type: boolean
         default: false
 
+  workflow_call:
+    inputs:
+      application:
+        required: true
+        type: string
+      prune:
+        required: false
+        type: boolean
+        default: false
+      insecure:
+        required: false
+        type: boolean
+        default: false
+      image_sha:
+        required: false
+        type: string
+        default: ''
+    secrets:
+      TS_OAUTH_CLIENT_ID:
+        required: true
+      TS_OAUTH_SECRET:
+        required: true
+      ARGOCD_SERVER:
+        required: true
+      ARGOCD_AUTH_TOKEN:
+        required: true
+
 permissions:
   contents: read
 
@@ -39,6 +66,7 @@ jobs:
       PRUNE: ${{ inputs.prune }}
       INSECURE: ${{ inputs.insecure }}
       ARGOCD_VERSION: v3.5.1
+      IMAGE_SHA: ${{ inputs.image_sha }}
 
     steps:
       - name: Check configuration
@@ -93,4 +121,9 @@ jobs:
           argocd app wait "$APPLICATION" --operation --timeout 600 "${flags[@]}"
           argocd app sync "$APPLICATION" --timeout 600 "${sync_flags[@]}" "${flags[@]}"
           argocd app wait "$APPLICATION" --sync --health --operation --timeout 600 "${flags[@]}"
-          printf '### Argo CD sync completed\n\nApplication: `%s`\n' "$APPLICATION" >> "$GITHUB_STEP_SUMMARY"
+          if [[ "$APPLICATION" == monikey ]]; then
+            health="$(curl --fail --silent --show-error --insecure --retry 12 --retry-connrefused --retry-delay 5 https://monikey.homelab.local/api/health/ready)"
+            printf '### MoniKey deployment succeeded\n\n- Deployed SHA: `%s`\n- Migration version: `006` (PreSync Job succeeded)\n- Argo CD: Synced and Healthy\n- API readiness: `%s`\n' "$IMAGE_SHA" "$health" >> "$GITHUB_STEP_SUMMARY"
+          else
+            printf '### Argo CD sync completed\n\nApplication: `%s`\n' "$APPLICATION" >> "$GITHUB_STEP_SUMMARY"
+          fi
