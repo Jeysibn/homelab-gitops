@@ -62,7 +62,7 @@ jobs:
                   raise SystemExit(f"MoniKey workflow run did not prove {key}={value!r}")
           if run.get("head_repository", {}).get("full_name", "").lower() != "jeysibn/monikey":
               raise SystemExit("MoniKey CI run did not originate from Jeysibn/monikey")
-          if not run.get("path", "").endswith(".github/workflows/ci.yml"):
+          if run.get("path", "").split("@", 1)[0] != ".github/workflows/ci.yml":
               raise SystemExit("MoniKey run was not produced by the CI workflow")
           PY
           latest_sha="$(curl --fail --silent --show-error https://api.github.com/repos/Jeysibn/monikey/commits/main | python3 -c 'import json,sys; print(json.load(sys.stdin)["sha"])')"
@@ -132,8 +132,8 @@ jobs:
           python3 - "$run_json" "$IMAGE_SHA" <<'PY'
           import json, sys
           run = json.loads(sys.argv[1])
-          if run.get("event") != "push" or run.get("head_branch") != "main" or run.get("head_sha") != sys.argv[2] or run.get("conclusion") != "success" or run.get("head_repository", {}).get("full_name", "").lower() != "jeysibn/monikey":
-              raise SystemExit("MoniKey successful-main-push provenance check failed")
+          if run.get("event") != "push" or run.get("head_branch") != "main" or run.get("head_sha") != sys.argv[2] or run.get("conclusion") != "success" or run.get("head_repository", {}).get("full_name", "").lower() != "jeysibn/monikey" or run.get("path", "").split("@", 1)[0] != ".github/workflows/ci.yml":
+              raise SystemExit("MoniKey successful-main-CI provenance check failed")
           PY
           latest="$(curl --fail --silent --show-error https://api.github.com/repos/Jeysibn/monikey/commits/main | python3 -c 'import json,sys; print(json.load(sys.stdin)["sha"])')"
           [[ "$latest" == "$IMAGE_SHA" ]] || { echo '::error::Candidate became stale before promotion.'; exit 1; }
