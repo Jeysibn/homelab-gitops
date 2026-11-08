@@ -6,7 +6,7 @@ from monikey_release import close_gates, promote
 
 SHA = "a" * 40
 APP = Path("kubernetes/platform/monikey/manifests/application.yaml")
-MIGRATION = Path("kubernetes/platform/monikey/manifests/migration-runner.yaml"
+MIGRATION = Path("kubernetes/platform/monikey/manifests/migration-runner.yaml")
 
 
 class MoniKeyReleaseTests(unittest.TestCase):
