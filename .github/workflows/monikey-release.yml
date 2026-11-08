@@ -6,7 +6,11 @@ on:
   workflow_dispatch:
     inputs:
       image_sha:
-        description: Full 40-character MoniKey commit SHA (required for one-time adoption)
+        description: Full 40-character MoniKey commit SHA
+        required: true
+        type: string
+      monikey_run_id:
+        description: Successful MoniKey main CI workflow run ID for this SHA
         required: true
         type: string
       adopt_existing_schema:
@@ -26,14 +30,41 @@ jobs:
   verify-release:
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    outputs:
+      image_sha: ${{ steps.verify.outputs.image_sha }}
+      run_id: ${{ steps.verify.outputs.run_id }}
+      adoption: ${{ steps.verify.outputs.adoption }}
     steps:
-      - name: Verify current MoniKey main SHA and paired GHCR images
+      - name: Verify successful MoniKey main CI run and paired GHCR images
+        id: verify
         env:
           IMAGE_SHA: ${{ github.event.client_payload.image_sha || github.event.inputs.image_sha }}
+          MONIKEY_RUN_ID: ${{ github.event.client_payload.monikey_run_id || github.event.inputs.monikey_run_id }}
+          ADOPT: ${{ github.event.inputs.adopt_existing_schema || 'false' }}
         shell: bash
         run: |
           set -euo pipefail
           [[ "$IMAGE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo '::error::Expected a full MoniKey commit SHA.'; exit 1; }
+          [[ "$MONIKEY_RUN_ID" =~ ^[0-9]+$ ]] || { echo '::error::Expected a MoniKey CI workflow run ID.'; exit 1; }
+          run_json="$(curl --fail --silent --show-error             "https://api.github.com/repos/Jeysibn/monikey/actions/runs/$MONIKEY_RUN_ID")"
+          python3 - "$run_json" "$IMAGE_SHA" <<'PY'
+          import json, sys
+          run = json.loads(sys.argv[1])
+          sha = sys.argv[2]
+          expected = {
+              "event": "push",
+              "head_branch": "main",
+              "head_sha": sha,
+              "conclusion": "success",
+          }
+          for key, value in expected.items():
+              if run.get(key) != value:
+                  raise SystemExit(f"MoniKey workflow run did not prove {key}={value!r}")
+          if run.get("head_repository", {}).get("full_name", "").lower() != "jeysibn/monikey":
+              raise SystemExit("MoniKey CI run did not originate from Jeysibn/monikey")
+          if not run.get("path", "").endswith(".github/workflows/ci.yml"):
+              raise SystemExit("MoniKey run was not produced by the CI workflow")
+          PY
           latest_sha="$(curl --fail --silent --show-error https://api.github.com/repos/Jeysibn/monikey/commits/main | python3 -c 'import json,sys; print(json.load(sys.stdin)["sha"])')"
           if [[ "$IMAGE_SHA" != "$latest_sha" ]]; then
             echo "::error::Stale MoniKey release $IMAGE_SHA; current main is $latest_sha."
@@ -43,8 +74,11 @@ jobs:
             "ghcr.io/jeysibn/monikey-v2-frontend:sha-$IMAGE_SHA" \
             "ghcr.io/jeysibn/monikey-v2-api:sha-$IMAGE_SHA"; do
             docker manifest inspect "$image" > /dev/null
-            printf "Verified %s.\\n" "$image" >> "$GITHUB_STEP_SUMMARY"
+            printf 'Verified %s.\n' "$image" >> "$GITHUB_STEP_SUMMARY"
           done
+          echo "image_sha=$IMAGE_SHA" >> "$GITHUB_OUTPUT"
+          echo "run_id=$MONIKEY_RUN_ID" >> "$GITHUB_OUTPUT"
+          echo "adoption=$ADOPT" >> "$GITHUB_OUTPUT"
 
   backup:
     needs: verify-release
@@ -65,7 +99,7 @@ jobs:
     steps:
       - run: echo 'One-time adoption approval follows verified backup.'
 
-  promote:
+  promotion-pr:
     needs: [verify-release, backup, adoption-approval]
     if: >-
       always() && needs.verify-release.result == 'success' &&
@@ -73,122 +107,212 @@ jobs:
       needs.adoption-approval.result != 'failure' &&
       needs.adoption-approval.result != 'cancelled'
     runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      contents: write
+    timeout-minutes: 45
     outputs:
-      image_sha: ${{ steps.release.outputs.image_sha }}
-      adoption: ${{ steps.release.outputs.adoption }}
+      image_sha: ${{ needs.verify-release.outputs.image_sha }}
+      pr_number: ${{ steps.pr.outputs.pr_number }}
+      already_merged: ${{ steps.pr.outputs.already_merged }}
+    env:
+      GH_TOKEN: ${{ secrets.MONIKEY_GITOPS_PROMOTION_TOKEN }}
+      IMAGE_SHA: ${{ needs.verify-release.outputs.image_sha }}
+      MONIKEY_RUN_ID: ${{ needs.verify-release.outputs.run_id }}
+      ADOPTION: ${{ needs.verify-release.outputs.adoption }}
+      BRANCH: automation/monikey-deploy-${{ needs.verify-release.outputs.image_sha }}
     steps:
+      - name: Require the scoped promotion token
+        run: ': "${GH_TOKEN:?Configure MONIKEY_GITOPS_PROMOTION_TOKEN with repository-scoped permissions}"'
       - uses: actions/checkout@v4
         with:
           ref: main
-      - name: Validate and promote paired images
-        id: release
-        env:
-          IMAGE_SHA: ${{ github.event.client_payload.image_sha || github.event.inputs.image_sha }}
-          ADOPT: ${{ github.event.inputs.adopt_existing_schema || false }}
-        shell: bash
+          token: ${{ secrets.MONIKEY_GITOPS_PROMOTION_TOKEN }}
+      - name: Recheck release provenance and freshness
         run: |
           set -euo pipefail
-          [[ "$IMAGE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo '::error::Expected a full MoniKey commit SHA.'; exit 1; }
-          latest_sha="$(curl --fail --silent --show-error https://api.github.com/repos/Jeysibn/monikey/commits/main | python3 -c 'import json,sys; print(json.load(sys.stdin)["sha"])')"
-          if [[ "$IMAGE_SHA" != "$latest_sha" ]]; then
-            echo "::error::MoniKey main advanced during backup; refusing stale promotion."
+          run_json="$(curl --fail --silent --show-error "https://api.github.com/repos/Jeysibn/monikey/actions/runs/$MONIKEY_RUN_ID")"
+          python3 - "$run_json" "$IMAGE_SHA" <<'PY'
+          import json, sys
+          run = json.loads(sys.argv[1])
+          if run.get("event") != "push" or run.get("head_branch") != "main" or run.get("head_sha") != sys.argv[2] or run.get("conclusion") != "success" or run.get("head_repository", {}).get("full_name", "").lower() != "jeysibn/monikey":
+              raise SystemExit("MoniKey successful-main-push provenance check failed")
+          PY
+          latest="$(curl --fail --silent --show-error https://api.github.com/repos/Jeysibn/monikey/commits/main | python3 -c 'import json,sys; print(json.load(sys.stdin)["sha"])')"
+          [[ "$latest" == "$IMAGE_SHA" ]] || { echo '::error::Candidate became stale before promotion.'; exit 1; }
+      - name: Prepare or resume the SHA-specific deployment PR
+        id: pr
+        env:
+          GH_TOKEN: ${{ secrets.MONIKEY_GITOPS_PROMOTION_TOKEN }}
+        run: |
+          set -euo pipefail
+          existing="$(gh pr list --state all --head "$BRANCH" --base main --json number,state,mergedAt --jq '.[0] // empty')"
+          if [[ -n "$existing" ]]; then
+            number="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["number"])' "$existing")"
+            merged="$(python3 -c 'import json,sys; print(str(bool(json.loads(sys.argv[1]).get("mergedAt"))).lower())' "$existing")"
+            state="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["state"])' "$existing")"
+            if [[ "$merged" == true ]]; then
+              echo "pr_number=$number" >> "$GITHUB_OUTPUT"
+              echo "already_merged=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            if [[ "$state" == CLOSED ]]; then gh pr reopen "$number"; fi
+          else
+            git fetch origin main
+            remote_sha="$(git ls-remote --heads origin "$BRANCH" | awk '{print $1}')"
+            git checkout -B "$BRANCH" origin/main
+            python3 scripts/monikey_release.py promote --sha "$IMAGE_SHA" --adoption "$ADOPTION"
+            git diff --check
+            git add kubernetes/platform/monikey/manifests/application.yaml kubernetes/platform/monikey/manifests/migration-runner.yaml
+            git commit -m "deploy(monikey): promote sha-$IMAGE_SHA"
+            if [[ -n "$remote_sha" ]]; then
+              git push "--force-with-lease=refs/heads/$BRANCH:$remote_sha" origin "$BRANCH"
+            else
+              git push origin "$BRANCH"
+            fi
+            gh pr create --base main --head "$BRANCH" \
+              --title "deploy(monikey): promote sha-$IMAGE_SHA" \
+              --body "Automated deployment for MoniKey SHA `$IMAGE_SHA`.\n\nVerified successful MoniKey main CI run: $MONIKEY_RUN_ID. The backup-and-restore verification completed before this PR was opened. Migration authorization is limited to this release."
+            number="$(gh pr list --state open --head "$BRANCH" --base main --json number --jq '.[0].number')"
+          fi
+          echo "pr_number=$number" >> "$GITHUB_OUTPUT"
+          echo "already_merged=false" >> "$GITHUB_OUTPUT"
+      - name: Wait for required GitOps CI checks
+        if: steps.pr.outputs.already_merged != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.MONIKEY_GITOPS_PROMOTION_TOKEN }}
+        run: gh pr checks "${{ steps.pr.outputs.pr_number }}" --watch --fail-fast
+      - name: Reject a stale candidate and enable protected auto-merge
+        if: steps.pr.outputs.already_merged != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.MONIKEY_GITOPS_PROMOTION_TOKEN }}
+        run: |
+          set -euo pipefail
+          latest="$(curl --fail --silent --show-error https://api.github.com/repos/Jeysibn/monikey/commits/main | python3 -c 'import json,sys; print(json.load(sys.stdin)["sha"])')"
+          if [[ "$latest" != "$IMAGE_SHA" ]]; then
+            gh pr close "${{ steps.pr.outputs.pr_number }}" --comment "Closed automatically because MoniKey main advanced to $latest before merge."
+            echo "::error::Candidate became stale while GitOps CI was running."
             exit 1
           fi
-          python3 - "$IMAGE_SHA" "$ADOPT" <<'PY'
-          from pathlib import Path
-          import re, sys
-          sha, adopt = sys.argv[1], sys.argv[2].lower() == "true"
-          image_tag = f"sha-{sha}"
-          app = Path("kubernetes/platform/monikey/manifests/application.yaml")
-          text = app.read_text()
-          text, api_count = re.subn(r"(monikey-v2-api:)sha-[0-9a-f]{40}", lambda m: m.group(1) + image_tag, text)
-          text, frontend_count = re.subn(r"(monikey-v2-frontend:)sha-[0-9a-f]{40}", lambda m: m.group(1) + image_tag, text)
-          if api_count != 1 or frontend_count != 1:
-              raise SystemExit("Expected one API and one frontend image reference")
-          app.write_text(text)
-
-          migration = Path("kubernetes/platform/monikey/manifests/migration-runner.yaml")
-          migration_text = migration.read_text()
-          migration_text, apply_count = re.subn(
-              r'(?m)^  MONIKEY_MIGRATION_APPLY: "(?:true|false)"$',
-              '  MONIKEY_MIGRATION_APPLY: "true"',
-              migration_text,
-          )
-          if apply_count != 1:
-              raise SystemExit("Expected exactly one migration apply setting")
-          migration_text, adoption_count = re.subn(
-              r'(?m)^  MONIKEY_MIGRATION_ADOPT: "(?:true|false)"$',
-              lambda match: f'  MONIKEY_MIGRATION_ADOPT: "{str(adopt).lower()}"',
-              migration_text,
-          )
-          if adoption_count != 1:
-              raise SystemExit("Expected exactly one migration adoption setting")
-          migration_text, runner_count = re.subn(
-              r"(monikey-v2-api:)sha-[0-9a-f]{40}",
-              lambda m: m.group(1) + image_tag,
-              migration_text,
-          )
-          if runner_count != 1:
-              raise SystemExit("Expected exactly one migration runner image")
-          migration.write_text(migration_text)
-          PY
-          git diff --check
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add kubernetes/platform/monikey/manifests/application.yaml kubernetes/platform/monikey/manifests/migration-runner.yaml
-          git commit -m "deploy(monikey): promote sha-$IMAGE_SHA"
-          git push origin HEAD:main
-          echo "image_sha=$IMAGE_SHA" >> "$GITHUB_OUTPUT"
-          echo "adoption=$ADOPT" >> "$GITHUB_OUTPUT"
+          gh pr merge "${{ steps.pr.outputs.pr_number }}" --auto --squash
+          for attempt in {1..180}; do
+            state="$(gh pr view "${{ steps.pr.outputs.pr_number }}" --json state --jq '.state')"
+            if [[ "$state" == MERGED ]]; then
+              echo "GitOps deployment PR merged after required checks."
+              exit 0
+            fi
+            if [[ "$state" == CLOSED ]]; then
+              echo "::error::Deployment PR was closed without merging."
+              exit 1
+            fi
+            sleep 10
+          done
+          echo "::error::Auto-merge did not complete within 30 minutes; no deployment sync was requested."
+          exit 1
 
   sync:
-    needs: promote
+    needs: promotion-pr
     uses: ./.github/workflows/argocd-sync.yml
     with:
       application: monikey
       prune: false
       insecure: false
-      image_sha: ${{ needs.promote.outputs.image_sha }}
+      image_sha: ${{ needs.promotion-pr.outputs.image_sha }}
     secrets:
       TS_OAUTH_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
       TS_OAUTH_SECRET: ${{ secrets.TS_OAUTH_SECRET }}
       ARGOCD_SERVER: ${{ secrets.ARGOCD_SERVER }}
       ARGOCD_AUTH_TOKEN: ${{ secrets.ARGOCD_AUTH_TOKEN }}
 
-  finish-release:
+  close-gates-pr:
     if: needs.sync.result == 'success'
-    needs: [promote, sync]
+    needs: [promotion-pr, sync]
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
+    timeout-minutes: 45
+    outputs:
+      pr_number: ${{ steps.pr.outputs.pr_number }}
+      already_merged: ${{ steps.pr.outputs.already_merged }}
+    env:
+      GH_TOKEN: ${{ secrets.MONIKEY_GITOPS_PROMOTION_TOKEN }}
+      IMAGE_SHA: ${{ needs.promotion-pr.outputs.image_sha }}
+      BRANCH: automation/monikey-gates-off-${{ needs.promotion-pr.outputs.image_sha }}
     steps:
+      - name: Require the scoped promotion token
+        run: ': "${GH_TOKEN:?Configure MONIKEY_GITOPS_PROMOTION_TOKEN with repository-scoped permissions}"'
       - uses: actions/checkout@v4
         with:
           ref: main
-      - name: Disable schema changes after successful release
+          token: ${{ secrets.MONIKEY_GITOPS_PROMOTION_TOKEN }}
+      - name: Prepare or resume the gate-reset PR
+        id: pr
+        env:
+          GH_TOKEN: ${{ secrets.MONIKEY_GITOPS_PROMOTION_TOKEN }}
         run: |
           set -euo pipefail
-          sed -i 's/MONIKEY_MIGRATION_ADOPT: "true"/MONIKEY_MIGRATION_ADOPT: "false"/' kubernetes/platform/monikey/manifests/migration-runner.yaml
-          sed -i 's/MONIKEY_MIGRATION_APPLY: "true"/MONIKEY_MIGRATION_APPLY: "false"/' kubernetes/platform/monikey/manifests/migration-runner.yaml
-          git diff --check
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add kubernetes/platform/monikey/manifests/migration-runner.yaml
-          git commit -m 'chore(monikey): close migration authorization gate'
-          git push origin HEAD:main
-          echo 'Migration and adoption gates disabled after successful migration and health checks.' >> "$GITHUB_STEP_SUMMARY"
+          existing="$(gh pr list --state all --head "$BRANCH" --base main --json number,state,mergedAt --jq '.[0] // empty')"
+          if [[ -n "$existing" ]]; then
+            number="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["number"])' "$existing")"
+            merged="$(python3 -c 'import json,sys; print(str(bool(json.loads(sys.argv[1]).get("mergedAt"))).lower())' "$existing")"
+            state="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["state"])' "$existing")"
+            if [[ "$merged" == true ]]; then
+              echo "pr_number=$number" >> "$GITHUB_OUTPUT"
+              echo "already_merged=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            if [[ "$state" == CLOSED ]]; then gh pr reopen "$number"; fi
+          else
+            git fetch origin main
+            remote_sha="$(git ls-remote --heads origin "$BRANCH" | awk '{print $1}')"
+            git checkout -B "$BRANCH" origin/main
+            python3 scripts/monikey_release.py close-gates --sha "$IMAGE_SHA"
+            git diff --check
+            git add kubernetes/platform/monikey/manifests/migration-runner.yaml
+            git diff --cached --quiet && { echo '::error::Gate reset would make no change; refusing unvalidated reset.'; exit 1; }
+            git commit -m "chore(monikey): close migration gates for sha-$IMAGE_SHA"
+            if [[ -n "$remote_sha" ]]; then
+              git push "--force-with-lease=refs/heads/$BRANCH:$remote_sha" origin "$BRANCH"
+            else
+              git push origin "$BRANCH"
+            fi
+            gh pr create --base main --head "$BRANCH" \
+              --title "chore(monikey): close migration gates for sha-$IMAGE_SHA" \
+              --body "Automated gate reset for deployed MoniKey SHA `$IMAGE_SHA`. This PR is created only after the release workflow's Argo CD Synced/Healthy and API readiness checks succeeded."
+            number="$(gh pr list --state open --head "$BRANCH" --base main --json number --jq '.[0].number')"
+          fi
+          echo "pr_number=$number" >> "$GITHUB_OUTPUT"
+          echo "already_merged=false" >> "$GITHUB_OUTPUT"
+      - name: Wait for required GitOps CI checks
+        if: steps.pr.outputs.already_merged != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.MONIKEY_GITOPS_PROMOTION_TOKEN }}
+        run: gh pr checks "${{ steps.pr.outputs.pr_number }}" --watch --fail-fast
+      - name: Enable protected auto-merge and wait for validation
+        if: steps.pr.outputs.already_merged != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.MONIKEY_GITOPS_PROMOTION_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh pr merge "${{ steps.pr.outputs.pr_number }}" --auto --squash
+          for attempt in {1..180}; do
+            state="$(gh pr view "${{ steps.pr.outputs.pr_number }}" --json state --jq '.state')"
+            if [[ "$state" == MERGED ]]; then
+              echo 'Migration authorization gates closed through the protected PR.'
+              exit 0
+            fi
+            if [[ "$state" == CLOSED ]]; then
+              echo "::error::Gate-reset PR was closed without merging."
+              exit 1
+            fi
+            sleep 10
+          done
+          echo "::error::Gate-reset PR auto-merge did not complete within 30 minutes."
+          exit 1
 
   verify-final-sync:
-    needs: [promote, finish-release]
+    needs: [promotion-pr, close-gates-pr]
     uses: ./.github/workflows/argocd-sync.yml
     with:
       application: monikey
       prune: false
       insecure: false
-      image_sha: ${{ needs.promote.outputs.image_sha }}
+      image_sha: ${{ needs.promotion-pr.outputs.image_sha }}
     secrets:
       TS_OAUTH_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
       TS_OAUTH_SECRET: ${{ secrets.TS_OAUTH_SECRET }}
