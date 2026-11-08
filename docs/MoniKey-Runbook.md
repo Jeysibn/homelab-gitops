@@ -205,9 +205,13 @@ Before the one-time adoption, configure:
   Protect and rotate this token as a repository secret. It is used instead of
   the workflow's `GITHUB_TOKEN` because PRs created with `GITHUB_TOKEN` do not
   start the required PR checks automatically.
-- In **Settings → General → Pull Requests**, enable **Allow auto-merge**. Do
-  not weaken the main ruleset; its required `Lint & Validate Kubernetes` check
-  remains the merge gate.
+- In **Settings → General → Pull Requests**, enable **Allow auto-merge**. It is
+  currently disabled. Do not weaken the main ruleset; its required
+  `Lint & Validate Kubernetes` check remains the merge gate.
+- Verify Environment `monikey-migration-adoption` requires reviewer
+  `Jeysibn` and restricts deployments to `main`. Enable prevention of
+  self-review if GitHub offers it for this repository. The workflow needs no
+  Environment secrets.
 - Keep the existing backup, Tailscale, and Argo CD secrets here. No database
   credentials are moved to MoniKey.
 
