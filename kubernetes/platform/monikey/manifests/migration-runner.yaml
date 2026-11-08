@@ -1,0 +1,54 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: monikey-schema-migration
+  namespace: monikey
+  annotations:
+    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/sync-wave: "-2"
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+data:
+  MONIKEY_MIGRATION_ADOPT: "false"
+  MONIKEY_MIGRATION_APPLY: "false"
+
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: monikey-schema-migration
+  namespace: monikey
+  annotations:
+    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/sync-wave: "-1"
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation,HookSucceeded
+spec:
+  activeDeadlineSeconds: 900
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: monikey-schema-migration
+    spec:
+      automountServiceAccountToken: false
+      restartPolicy: Never
+      containers:
+        - name: migrate
+          image: ghcr.io/jeysibn/monikey-v2-api:sha-e54924985acb220797ba65254d1274f39365cabe
+          imagePullPolicy: IfNotPresent
+          command: ["python", "/app/database/migrate.py"]
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: monikey-db
+                  key: DATABASE_URL
+          envFrom:
+            - configMapRef:
+                name: monikey-schema-migration
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi

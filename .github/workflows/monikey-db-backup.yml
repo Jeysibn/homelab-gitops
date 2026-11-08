@@ -9,6 +9,21 @@ on:
         type: boolean
         default: false
 
+  workflow_call:
+    inputs:
+      confirm_live_backup:
+        required: true
+        type: boolean
+    secrets:
+      TS_OAUTH_CLIENT_ID:
+        required: true
+      TS_OAUTH_SECRET:
+        required: true
+      MONIKEY_BACKUP_KUBECONFIG_B64:
+        required: true
+      MONIKEY_BACKUP_PASSPHRASE:
+        required: true
+
 permissions:
   contents: read
 
@@ -132,6 +147,7 @@ jobs:
           docker exec --interactive "$container" \
             pg_restore --username=postgres --dbname=monikey_backup_verify \
               --no-owner --exit-on-error < "$MONIKEY_BACKUP_FILE" > /dev/null
+          printf "Verified encrypted backup artifact %s by restoring it into disposable PostgreSQL.\\n" "$GITHUB_RUN_ID" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Encrypt backup for artifact storage
         shell: bash

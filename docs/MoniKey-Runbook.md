@@ -44,24 +44,78 @@ the PVC to rerun initialization or to repair an Argo CD diff.
 
 ## Schema migrations
 
-For each numbered migration, first take and verify a logical backup using the
-procedure below. Then merge the reviewed GitOps change. Argo CD runs migration
-Jobs as PreSync hooks before applying the application Deployments. The SQL is
-mirrored from MoniKey's canonical migration; a failed Job stops the sync so the
-new API image is not rolled out. Migrations 002 and 003 run in order on every
-sync: 002 creates the transfer table, then 003 removes the old nonnegative
-baseline constraints needed for current-amount corrections. Both migrations
-are idempotent and safely do nothing when their changes are already present.
+Normal MoniKey releases are dispatched only by the successful MoniKey
+main-branch CI workflow. The dispatch includes its workflow run ID and full
+commit SHA; GitOps verifies the run was a successful push to MoniKey main and
+confirms both paired GHCR images exist before starting the backup. GitOps then
+creates a SHA-specific deployment PR. The encrypted backup must restore
+successfully into disposable PostgreSQL before that PR can be opened. GitOps CI
+must pass and protected auto-merge must merge the PR before Argo CD is asked to
+sync.
 
-This removes the manual `kubectl` step for applying migrations. The backup and
-restore-check procedure remains manual because no protected off-cluster backup
-destination is configured for automation. For migration 003, create and verify
-the backup before merging the GitOps change; the merge triggers the PreSync Job
-through the existing automated Argo CD sync policy.
+Argo CD's existing automated sync runs the migration Job as a PreSync hook. It
+uses the matching API image, which contains the canonical migrations from
+MoniKey's `database/` directory. The runner serializes with a PostgreSQL
+advisory lock, checks version/checksum history, applies missing migrations in
+order, and records each checksum. A failed migration stops Argo CD before the
+API or frontend Deployment is updated. Migration 001 is initialization-only and
+is never executed by the runner. No SQL is manually copied into this repository.
 
-Do not delete the PostgreSQL PVC to apply schema changes. A fresh empty database
-gets the current schema from `monikey-db-init`; existing databases get numbered
-forward migrations through the Argo CD hook.
+The migration ConfigMap defaults `MONIKEY_MIGRATION_APPLY` to `false`. A normal
+Argo sync can verify a complete, current ledger, but it stops if adoption or a
+migration is pending. Only the release workflow sets the flag to `true`, after
+the encrypted backup has been restored successfully in disposable PostgreSQL.
+After Argo CD reports Synced/Healthy and the API readiness probe succeeds, a
+separate SHA-specific PR turns both gates off. That PR also must pass GitOps CI
+and protected auto-merge before a final Argo sync is verified. A failed
+migration or health check cannot open the reset PR; a failed reset PR leaves the
+gate enabled. Rerunning the same release resumes its matching open or merged
+PR instead of changing the protected main branch directly.
+
+### One-time adoption of the existing database
+
+Use this activation order:
+
+1. Confirm `HOMELAB_GITOPS_DISPATCH_TOKEN` is absent from MoniKey. Merge MoniKey
+   PR #14; its successful CI publishes both SHA images but automatic dispatch
+   remains disabled.
+2. Configure the GitOps-only `MONIKEY_GITOPS_PROMOTION_TOKEN` and enable
+   repository auto-merge as described under Automated release setup. This token
+   opens PRs and enables auto-merge; it does not bypass branch protection.
+3. Merge GitOps PR #101. The existing Argo auto-sync still sees both migration
+   gates disabled, so it will not adopt or apply a migration.
+4. From the successful MoniKey main CI run, copy the exact commit SHA and run ID.
+   In GitOps **Actions → MoniKey release and initial adoption → Run workflow** on
+   `main`, enter both values and set `adopt_existing_schema` to `true`.
+5. Wait for the backup job's restore verification to succeed. Then approve the
+   protected `monikey-migration-adoption` Environment job. The workflow checks
+   the known live schema state in the migration Job, creates a protected
+   deployment PR, and waits for CI and auto-merge.
+6. Argo CD runs the migration Job as PreSync. It recognizes a complete known
+   baseline, records checksums without replaying those migrations, and applies
+   only pending migrations. It refuses partial or unknown states and never runs
+   `001_init.sql`.
+7. Wait for the workflow's Argo Synced/Healthy and API readiness checks, then
+   its separate gate-reset PR and final Argo sync. Confirm the summary includes
+   backup verification, deployed SHA, migration version, and health results.
+8. Only after the successful adoption run, add
+   `HOMELAB_GITOPS_DISPATCH_TOKEN` to MoniKey. Future successful main CI runs
+   then dispatch automatically.
+
+The initial adoption must use a successful MoniKey main CI run and the required
+Environment approval. The GitOps workflow cannot proceed after a failed backup
+or before that approval. The actual existing database schema has not been
+inspected as part of preparing this workflow; the migration runner recognizes
+the schema at run time and fails safely if it is partial or unknown.
+
+The live schema has not been inspected as part of preparing this workflow. The
+existing project record reports migrations 002 and 003 deployed and migration
+004 pending at the time of that record; the runner validates actual state
+before adopting it.
+
+Never delete the PostgreSQL PVC, reset the database, or overwrite financial
+records to resolve a migration error. An application image rollback does not
+roll back a schema migration.
 
 ## Verify the deployment
 
@@ -137,6 +191,35 @@ kubectl exec -n monikey postgres-0 -- \
 For recovery, stop the API before restoring into the live database and preserve
 the existing PVC and a separate backup copy. Confirm the target database before
 any restore that replaces existing records.
+
+## Automated release setup
+
+Before the one-time adoption, configure:
+
+- GitOps repository secret `MONIKEY_GITOPS_PROMOTION_TOKEN`: a fine-grained
+  personal access token limited to `Jeysibn/homelab-gitops`, with
+  `Contents: read/write`, `Pull requests: read/write`, and `Checks: read`
+  (add `Commit statuses: read` if exposed separately by GitHub). It creates
+  temporary branches and PRs, reads their checks, and requests auto-merge. It
+  must have no Administration permission and no branch-protection bypass.
+  Protect and rotate this token as a repository secret. It is used instead of
+  the workflow's `GITHUB_TOKEN` because PRs created with `GITHUB_TOKEN` do not
+  start the required PR checks automatically.
+- In **Settings → General → Pull Requests**, enable **Allow auto-merge**. It is
+  currently disabled. Do not weaken the main ruleset; its required
+  `Lint & Validate Kubernetes` check remains the merge gate.
+- Verify Environment `monikey-migration-adoption` requires reviewer
+  `Jeysibn` and restricts deployments to `main`. Enable prevention of
+  self-review if GitHub offers it for this repository. The workflow needs no
+  Environment secrets.
+- Keep the existing backup, Tailscale, and Argo CD secrets here. No database
+  credentials are moved to MoniKey.
+
+Do not configure MoniKey's `HOMELAB_GITOPS_DISPATCH_TOKEN` until adoption has
+completed successfully. After that one-time secret is added, releases create
+protected PRs, wait for required checks, and enable auto-merge automatically.
+If GitHub requires a review or disallows auto-merge, the workflow stops safely
+without syncing or closing migration gates.
 
 ## Rollback
 
