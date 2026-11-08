@@ -110,6 +110,7 @@ jobs:
     timeout-minutes: 45
     outputs:
       image_sha: ${{ needs.verify-release.outputs.image_sha }}
+      run_id: ${{ needs.verify-release.outputs.run_id }}
       pr_number: ${{ steps.pr.outputs.pr_number }}
       already_merged: ${{ steps.pr.outputs.already_merged }}
     env:
@@ -207,8 +208,32 @@ jobs:
           echo "::error::Auto-merge did not complete within 30 minutes; no deployment sync was requested."
           exit 1
 
-  sync:
+  verify-current:
     needs: promotion-pr
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      IMAGE_SHA: ${{ needs.promotion-pr.outputs.image_sha }}
+      MONIKEY_RUN_ID: ${{ needs.promotion-pr.outputs.run_id }}
+    steps:
+      - name: Recheck source CI provenance and latest MoniKey SHA before Argo sync
+        run: |
+          set -euo pipefail
+          run_json="$(curl --fail --silent --show-error "https://api.github.com/repos/Jeysibn/monikey/actions/runs/$MONIKEY_RUN_ID")"
+          python3 - "$run_json" "$IMAGE_SHA" <<'PY'
+          import json, sys
+          run = json.loads(sys.argv[1])
+          if run.get("event") != "push" or run.get("head_branch") != "main" or run.get("head_sha") != sys.argv[2] or run.get("conclusion") != "success" or run.get("head_repository", {}).get("full_name", "").lower() != "jeysibn/monikey" or run.get("path", "").split("@", 1)[0] != ".github/workflows/ci.yml":
+              raise SystemExit("MoniKey CI provenance check failed before deployment")
+          PY
+          latest="$(curl --fail --silent --show-error https://api.github.com/repos/Jeysibn/monikey/commits/main | python3 -c 'import json,sys; print(json.load(sys.stdin)["sha"])')"
+          if [[ "$latest" != "$IMAGE_SHA" ]]; then
+            echo "::error::Refusing to deploy stale MoniKey SHA $IMAGE_SHA; current main is $latest."
+            exit 1
+          fi
+
+  sync:
+    needs: [promotion-pr, verify-current]
     uses: ./.github/workflows/argocd-sync.yml
     with:
       application: monikey
