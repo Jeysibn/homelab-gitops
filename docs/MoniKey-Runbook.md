@@ -202,7 +202,9 @@ Before the one-time adoption, configure:
   (add `Commit statuses: read` if exposed separately by GitHub). It creates
   temporary branches and PRs, reads their checks, and requests auto-merge. It
   must have no Administration permission and no branch-protection bypass.
-  Protect and rotate this token as a repository secret.
+  Protect and rotate this token as a repository secret. It is used instead of
+  the workflow's `GITHUB_TOKEN` because PRs created with `GITHUB_TOKEN` do not
+  start the required PR checks automatically.
 - In **Settings → General → Pull Requests**, enable **Allow auto-merge**. Do
   not weaken the main ruleset; its required `Lint & Validate Kubernetes` check
   remains the merge gate.
