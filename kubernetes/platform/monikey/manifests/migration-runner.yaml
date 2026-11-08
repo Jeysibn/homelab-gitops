@@ -8,8 +8,8 @@ metadata:
     argocd.argoproj.io/sync-wave: "-2"
     argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
 data:
-  MONIKEY_MIGRATION_ADOPT: "false"
-  MONIKEY_MIGRATION_APPLY: "false"
+  MONIKEY_MIGRATION_ADOPT: "true"
+  MONIKEY_MIGRATION_APPLY: "true"
 
 ---
 apiVersion: batch/v1
@@ -33,7 +33,7 @@ spec:
       restartPolicy: Never
       containers:
         - name: migrate
-          image: ghcr.io/jeysibn/monikey-v2-api:sha-e54924985acb220797ba65254d1274f39365cabe
+          image: ghcr.io/jeysibn/monikey-v2-api:sha-c639999963dda7ebfb8affe0b32c897f87ac10d9
           imagePullPolicy: IfNotPresent
           command: ["python", "/app/database/migrate.py"]
           env:
