@@ -28,7 +28,7 @@ jobs:
         run: python3 -m unittest discover -s scripts/monikey-schema-inspect/tests -p 'test_*.py' -v
 
       - name: Run MoniKey release manifest offline tests
-        run: python3 -m unittest discover -s scripts/tests -p 'test_*.py' -v
+        run: PYTHONPATH=scripts python3 -m unittest discover -s scripts/tests -p 'test_*.py' -v
 
       - name: Check shell scripts
         run: bash -n bootstrap.sh kubernetes/bootstrap/*.sh
