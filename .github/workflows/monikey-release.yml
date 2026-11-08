@@ -126,6 +126,10 @@ jobs:
         with:
           ref: main
           token: ${{ secrets.MONIKEY_GITOPS_PROMOTION_TOKEN }}
+      - name: Configure repository-local Git commit identity
+        run: |
+          git config --local user.name 'github-actions[bot]'
+          git config --local user.email '41898282+github-actions[bot]@users.noreply.github.com'
       - name: Recheck release provenance and freshness
         run: |
           set -euo pipefail
@@ -265,6 +269,10 @@ jobs:
         with:
           ref: main
           token: ${{ secrets.MONIKEY_GITOPS_PROMOTION_TOKEN }}
+      - name: Configure repository-local Git commit identity
+        run: |
+          git config --local user.name 'github-actions[bot]'
+          git config --local user.email '41898282+github-actions[bot]@users.noreply.github.com'
       - name: Prepare or resume the gate-reset PR
         id: pr
         env:
