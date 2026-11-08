@@ -242,7 +242,9 @@ jobs:
     with:
       application: monikey
       prune: false
-      insecure: false
+      # Match the proven manual Argo CD Sync invocation for the self-signed endpoint.
+      # TODO: install a trusted CA and revert to insecure: false.
+      insecure: true
       image_sha: ${{ needs.promotion-pr.outputs.image_sha }}
     secrets:
       TS_OAUTH_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
@@ -344,7 +346,9 @@ jobs:
     with:
       application: monikey
       prune: false
-      insecure: false
+      # Match the proven manual Argo CD Sync invocation for the self-signed endpoint.
+      # TODO: install a trusted CA and revert to insecure: false.
+      insecure: true
       image_sha: ${{ needs.promotion-pr.outputs.image_sha }}
     secrets:
       TS_OAUTH_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
