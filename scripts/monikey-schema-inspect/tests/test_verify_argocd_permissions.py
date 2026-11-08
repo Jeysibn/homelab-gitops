@@ -19,6 +19,7 @@ def evidence_document(policy_csv="", *, project_roles=None, captured_at=None, ex
     data = {"policy.csv": policy_csv}
     data.update(extra_data or {})
     return {
+        "schemaVersion": 2,
         "capturedAt": captured_at or datetime.now(timezone.utc).isoformat(),
         "cluster": {"context": EXPECTED_CONTEXT, "apiServer": EXPECTED_API_SERVER},
         "appProject": {
@@ -162,7 +163,7 @@ class VerifyArgocdPermissionsDiagnosticTests(unittest.TestCase):
 
     def test_every_live_can_i_probe_uses_v351_supported_values(self):
         self.assertEqual(verifier.SUPPORTED_ACTIONS, {
-            "get", "create", "update", "delete", "sync", "override", "action", "invoke",
+            "get", "create", "update", "delete", "sync", "rollback", "override", "action", "invoke",
         })
         self.assertEqual(verifier.SUPPORTED_RESOURCES, {
             "clusters", "projects", "applications", "applicationsets", "repositories",
@@ -178,6 +179,13 @@ class VerifyArgocdPermissionsDiagnosticTests(unittest.TestCase):
                       verifier.PERMISSION_CHECKS)
         self.assertFalse(any(action == "rollback" for action, *_ in verifier.PERMISSION_CHECKS))
 
+    def test_projects_read_denial_is_a_mandatory_live_probe(self):
+        check = ("get", "projects", "*")
+        self.assertIn((*check, "no"), verifier.PERMISSION_CHECKS)
+        with self.assertRaises(verifier.VerificationFailure) as caught:
+            self.verify(runner_for(permission_values={check: "yes"}))
+        self.assertEqual(caught.exception.category, "UNEXPECTED_PERMISSION_ALLOWED")
+
     def test_project_scoped_broad_checks_use_project_object_wildcards(self):
         for action, resource, object_name, _expected in verifier.PERMISSION_CHECKS:
             if resource in {"applications", "applicationsets", "exec"} and object_name in {"*", "*/*"}:
@@ -186,6 +194,7 @@ class VerifyArgocdPermissionsDiagnosticTests(unittest.TestCase):
 
     def test_fine_grained_mutation_grants_block_verification(self):
         policies = (
+            "p, role:readonly, applications, rollback, default/monikey-inspection-access, allow",
             "p, role:readonly, applications, update/*, *, allow",
             "p, role:unrelated, applications, delete/spec/replicas, *, allow",
             "p, role:unrelated, *, action/extensions/*, *, allow",
@@ -197,13 +206,13 @@ class VerifyArgocdPermissionsDiagnosticTests(unittest.TestCase):
                 self.write_evidence(document)
                 with self.assertRaises(verifier.VerificationFailure) as caught:
                     self.validate()
-                self.assertEqual(caught.exception.category, "RBAC_EVIDENCE_UNSAFE")
+                self.assertEqual(caught.exception.category, "RBAC_POLICY_UNSAFE")
 
     def test_project_role_extra_policy_or_group_blocks_verification(self):
         cases = (
             {"name": "monikey-inspection-reader", "policies": [verifier.EXPECTED_PROJECT_POLICY],
              "groups": ["unexpected-group"]},
-            {"name": "monikey-inspection-reader", "policies": [verifier.EXPECTED_PROJECT_POLICY, "extra"],
+            {"name": "monikey-inspection-reader", "policies": [verifier.EXPECTED_PROJECT_POLICY, "p, proj:default:monikey-inspection-reader, projects, get, default, allow"],
              "groups": []},
         )
         for role in cases:
@@ -211,13 +220,13 @@ class VerifyArgocdPermissionsDiagnosticTests(unittest.TestCase):
                 self.write_evidence(evidence_document(project_roles=[role]))
                 with self.assertRaises(verifier.VerificationFailure) as caught:
                     self.validate()
-                self.assertEqual(caught.exception.category, "RBAC_EVIDENCE_INVALID")
+                self.assertEqual(caught.exception.category, "RBAC_POLICY_UNSAFE")
 
-        duplicate = cases[1]
+        duplicate = {"name": "monikey-inspection-reader", "policies": [verifier.EXPECTED_PROJECT_POLICY], "groups": []}
         self.write_evidence(evidence_document(project_roles=[duplicate, duplicate]))
         with self.assertRaises(verifier.VerificationFailure) as caught:
             self.validate()
-        self.assertEqual(caught.exception.category, "RBAC_EVIDENCE_INVALID")
+        self.assertEqual(caught.exception.category, "APP_PROJECT_VALIDATION")
 
     def test_missing_stale_and_malformed_global_evidence_fail_closed(self):
         with self.assertRaises(verifier.VerificationFailure) as missing:
@@ -240,7 +249,7 @@ class VerifyArgocdPermissionsDiagnosticTests(unittest.TestCase):
         self.write_evidence(malformed)
         with self.assertRaises(verifier.VerificationFailure) as invalid:
             self.validate()
-        self.assertEqual(invalid.exception.category, "RBAC_EVIDENCE_INVALID")
+        self.assertEqual(invalid.exception.category, "RBAC_POLICY_VALIDATION")
 
     def test_group_claims_and_non_glob_policy_mode_fail_closed(self):
         with self.assertRaises(verifier.VerificationFailure) as caught:
@@ -250,17 +259,17 @@ class VerifyArgocdPermissionsDiagnosticTests(unittest.TestCase):
         self.write_evidence(evidence_document(extra_data={"policy.matchMode": "regex"}))
         with self.assertRaises(verifier.VerificationFailure) as invalid:
             self.validate()
-        self.assertEqual(invalid.exception.category, "RBAC_EVIDENCE_INVALID")
+        self.assertEqual(invalid.exception.category, "RBAC_CONFIGMAP_VALIDATION")
 
         self.write_evidence(evidence_document(extra_data={"policy.default": "role:admin"}))
         with self.assertRaises(verifier.VerificationFailure) as unsafe:
             self.validate()
-        self.assertEqual(unsafe.exception.category, "RBAC_EVIDENCE_UNSAFE")
+        self.assertEqual(unsafe.exception.category, "RBAC_POLICY_UNSAFE")
 
         self.write_evidence(evidence_document(extra_data={"policy.default": "role:readonly"}))
         with self.assertRaises(verifier.VerificationFailure) as broad_read:
             self.validate()
-        self.assertEqual(broad_read.exception.category, "RBAC_EVIDENCE_UNSAFE")
+        self.assertEqual(broad_read.exception.category, "RBAC_POLICY_UNSAFE")
 
     def test_evidence_must_match_approved_cluster_identity(self):
         document = evidence_document()
@@ -269,6 +278,338 @@ class VerifyArgocdPermissionsDiagnosticTests(unittest.TestCase):
         with self.assertRaises(verifier.VerificationFailure) as caught:
             self.validate()
         self.assertEqual(caught.exception.category, "RBAC_EVIDENCE_INVALID")
+
+    def test_composition_order_main_then_sorted_fragments(self):
+        data = {
+            "policy.z.csv": "last",
+            "policy.csv": "main",
+            "policy.a.csv": "first",
+            "policy..csv": "empty-name",
+            "policy.a...b.csv": "multiple-dots",
+        }
+        self.assertEqual(
+            verifier.compose_policy(data),
+            "main\nempty-name\nmultiple-dots\nfirst\nlast",
+        )
+        self.assertEqual(verifier.compose_policy({"policy.a.csv": "only"}), "\nonly")
+
+    def test_composition_matches_v351_policycsv_selector(self):
+        data = {
+            "policy.csv": "main",
+            "policy..csv": "empty-name",
+            "policy.a...b.csv": "multiple-dots",
+            "policy.z.csv": "last",
+            "policy.default": "not a fragment",
+            "policy.ignored.yaml": "not a fragment",
+            "xpolicy.not-a-fragment.csv": "not a fragment",
+        }
+        upstream_selected = sorted(
+            key for key in data
+            if key.startswith("policy.") and key.endswith(".csv") and key != "policy.csv"
+        )
+        upstream_composition = data["policy.csv"] + "".join(
+            "\n" + data[key] for key in upstream_selected
+        )
+        self.assertEqual(
+            verifier.compose_policy(data),
+            upstream_composition,
+        )
+        self.assertEqual(upstream_selected, ["policy..csv", "policy.a...b.csv", "policy.z.csv"])
+
+    def test_isolated_policy_runs_all_probes_but_strict_contract_still_blocks(self):
+        self.write_evidence(evidence_document(
+            "p, proj:default:monikey-inspection-reader, applications, get, "
+            "default/monikey-inspection-access, allow"
+        ))
+        calls = []
+        base_runner = runner_for()
+
+        def recording_runner(command, **kwargs):
+            calls.append(command)
+            return base_runner(command, **kwargs)
+
+        with self.assertRaisesRegex(verifier.VerificationFailure, "RBAC_IMPLICIT_PROJECT_READ_BLOCKER"):
+            self.verify(recording_runner)
+        self.assertEqual(sum("can-i" in command for command in calls), len(verifier.PERMISSION_CHECKS))
+        self.assertEqual(sum("get-user-info" in command for command in calls), 1)
+
+    def test_supported_fragments_preserve_safe_records_and_role_inheritance(self):
+        data = {
+            "policy.github-actions.csv": "g, fixture-user, role:fixture",
+            "policy.github-actions-project.csv": "g, role:fixture, role:reader",
+            "policy.z.csv": "p, proj:default:monikey-inspection-reader, applications, get, "
+                            "default/monikey-inspection-access, allow",
+        }
+        self.write_evidence(evidence_document(extra_data=data))
+        self.validate()
+        document = evidence_document(extra_data=data)
+        del document["configMap"]["data"]["policy.csv"]
+        self.write_evidence(document)
+        self.validate()
+
+        safe_policy = (
+            "p, proj:default:monikey-inspection-reader, applications, get, "
+            "default/monikey-inspection-access, allow"
+        )
+        self.write_evidence(evidence_document(extra_data={
+            "policy..csv": safe_policy,
+            "policy.fragment...two.csv": safe_policy,
+        }))
+        self.validate()
+
+    def test_unsafe_grant_in_policy_dot_csv_is_classified_as_unsafe(self):
+        self.write_evidence(evidence_document(extra_data={
+            "policy..csv": "p, role:unrelated, applications, get, */*, allow",
+        }))
+        with self.assertRaises(verifier.VerificationFailure) as caught:
+            self.validate()
+        self.assertEqual(caught.exception.category, "RBAC_POLICY_UNSAFE")
+
+    def test_comment_recognition_matches_v351_raw_physical_line_behavior(self):
+        # Expected results are derived from Argo's LoadPolicy and loadPolicyLine:
+        # trim the physical line, skip raw comments, then parse one CSV record.
+        inputs = {
+            "# ordinary comment": None,
+            "   # whitespace-prefixed comment": None,
+            '"#not-a-comment", ignored, columns': ["#not-a-comment", "ignored", "columns"],
+            "\x1c#not-a-comment": ["\x1c#not-a-comment"],
+        }
+        for line, expected_fields in inputs.items():
+            with self.subTest(line=line):
+                trimmed = verifier.trim_go_space(line)
+                parsed_fields = (
+                    None if not trimmed or trimmed.startswith("#")
+                    else verifier.parse_argocd_policy_line(trimmed)
+                )
+                self.assertEqual(parsed_fields, expected_fields)
+
+        for policy in (
+            '# regular comment\np, proj:default:monikey-inspection-reader, applications, get, '
+            'default/monikey-inspection-access, allow',
+            '   # indented comment\np, proj:default:monikey-inspection-reader, applications, get, '
+            'default/monikey-inspection-access, allow',
+        ):
+            self.write_evidence(evidence_document(policy))
+            self.validate()
+
+        malformed_records = {
+            "policy.csv": '"#not-a-comment", ignored, columns',
+            "policy..csv": '"#not-a-comment", ignored, columns',
+            "policy.extra.csv": '"#not-a-comment", ignored, columns',
+        }
+        for key, record in malformed_records.items():
+            self.write_evidence(evidence_document(extra_data={key: record}))
+            with self.subTest(key=key), self.assertRaises(verifier.VerificationFailure) as caught:
+                self.validate()
+            self.assertEqual(caught.exception.category, "RBAC_POLICY_VALIDATION")
+
+        self.write_evidence(evidence_document("\x1c#not-a-comment"))
+        with self.assertRaises(verifier.VerificationFailure) as caught:
+            self.validate()
+        self.assertEqual(caught.exception.category, "RBAC_POLICY_VALIDATION")
+
+        for key in ("policy..csv", "policy.extra.csv"):
+            self.write_evidence(evidence_document(extra_data={key: 'p, "unterminated'}))
+            with self.subTest(key=key), self.assertRaises(verifier.VerificationFailure) as caught:
+                self.validate()
+            self.assertEqual(caught.exception.category, "RBAC_POLICY_VALIDATION")
+
+    def test_v351_csv_field_whitespace_quoting_and_escaping(self):
+        cases = {
+            'p,\trole:reader, applications, get, default/monikey-inspection-access, allow': [
+                "p", "role:reader", "applications", "get",
+                "default/monikey-inspection-access", "allow",
+            ],
+            'p, " role:reader ", applications, get, default/monikey-inspection-access, allow': [
+                "p", " role:reader ", "applications", "get",
+                "default/monikey-inspection-access", "allow",
+            ],
+            'p,\t"role:reader", applications, get, default/monikey-inspection-access, allow': [
+                "p", "role:reader", "applications", "get",
+                "default/monikey-inspection-access", "allow",
+            ],
+            'p,\u00a0role:reader, applications, get, default/monikey-inspection-access, allow': [
+                "p", "role:reader", "applications", "get",
+                "default/monikey-inspection-access", "allow",
+            ],
+            'p,\u2003role:reader, applications, get, default/monikey-inspection-access, allow': [
+                "p", "role:reader", "applications", "get",
+                "default/monikey-inspection-access", "allow",
+            ],
+            'p,\u3000" role:reader ", applications, get, default/monikey-inspection-access, allow': [
+                "p", " role:reader ", "applications", "get",
+                "default/monikey-inspection-access", "allow",
+            ],
+            'p, role:reader , applications, get, default/monikey-inspection-access, allow': [
+                "p", "role:reader ", "applications", "get",
+                "default/monikey-inspection-access", "allow",
+            ],
+            'p, "role:""reader""", applications, get, "default/app,one", allow': [
+                "p", 'role:"reader"', "applications", "get", "default/app,one", "allow",
+            ],
+            'p, role:reader, applications, get, default/monikey-inspection-access, allow': [
+                "p", "role:reader", "applications", "get",
+                "default/monikey-inspection-access", "allow",
+            ],
+        }
+        for line, expected in cases.items():
+            with self.subTest(line=line):
+                self.assertEqual(verifier.parse_argocd_policy_line(line), expected)
+
+        for malformed in (
+            'p, role:reader, applications, get, "default/name, allow',
+            'p, "role:reader"suffix, applications, get, default/name, allow',
+            'p, role:"reader", applications, get, default/name, allow',
+        ):
+            with self.subTest(malformed=malformed), self.assertRaises(verifier.PolicyCSVError):
+                verifier.parse_argocd_policy_line(malformed)
+
+        verifier.validate_composed_policy({
+            "policy.csv": (
+                'p, "proj:default:monikey-inspection-reader", applications, get, '
+                "default/monikey-inspection-access, allow"
+            ),
+        })
+        with self.assertRaises(verifier.VerificationFailure) as invalid_type:
+            verifier.validate_composed_policy({
+                "policy.csv": (
+                    "p , proj:default:monikey-inspection-reader, applications, get, "
+                    "default/monikey-inspection-access, allow"
+                ),
+            })
+        self.assertEqual(invalid_type.exception.category, "RBAC_POLICY_VALIDATION")
+
+    def test_only_empty_physical_lines_are_skipped(self):
+        valid = "p, proj:default:monikey-inspection-reader, applications, get, " \
+                "default/monikey-inspection-access, allow"
+        self.write_evidence(evidence_document("\n  \t\u00a0\n" + valid + "\r\n"))
+        self.validate()
+
+        malformed = (",,", ",,,,,", '""', '""""', '""","""', " , \t, ")
+        for record in malformed:
+            self.write_evidence(evidence_document(record))
+            with self.subTest(record=record), self.assertRaises(verifier.VerificationFailure) as caught:
+                self.validate()
+            self.assertEqual(caught.exception.category, "RBAC_POLICY_VALIDATION")
+
+        for key in ("policy..csv", "policy.extra.csv"):
+            for record in malformed:
+                self.write_evidence(evidence_document(extra_data={key: record}))
+                with self.subTest(key=key, record=record), self.assertRaises(
+                    verifier.VerificationFailure
+                ) as caught:
+                    self.validate()
+                self.assertEqual(caught.exception.category, "RBAC_POLICY_VALIDATION")
+
+    def test_multiline_quoted_record_is_rejected_per_upstream_physical_line_parser(self):
+        policy = 'p, role:reader, applications, get, "default/\nmonikey-inspection-access", allow'
+        self.write_evidence(evidence_document(extra_data={"policy..csv": policy}))
+        with self.assertRaises(verifier.VerificationFailure) as caught:
+            self.validate()
+        self.assertEqual(caught.exception.category, "RBAC_POLICY_VALIDATION")
+
+    def test_invalid_keys_and_non_string_fragments_fail_closed(self):
+        for key, value in (("unrelated", ""), ("policy.fixture.yaml", ""),
+                           ("policy.bad/.csv", ""), ("policy.fixture.csv", None)):
+            self.write_evidence(evidence_document(extra_data={key: value}))
+            with self.subTest(key=key), self.assertRaises(verifier.VerificationFailure):
+                self.validate()
+
+    def test_failure_categories_separate_project_configmap_policy_and_probe(self):
+        document = evidence_document()
+        document["appProject"]["metadata"]["name"] = "other"
+        self.write_evidence(document)
+        with self.assertRaises(verifier.VerificationFailure) as project:
+            self.validate()
+        self.assertEqual(project.exception.category, "APP_PROJECT_VALIDATION")
+
+        self.write_evidence(evidence_document(extra_data={"unsupported": "value"}))
+        with self.assertRaises(verifier.VerificationFailure) as config_map:
+            self.validate()
+        self.assertEqual(config_map.exception.category, "RBAC_CONFIGMAP_VALIDATION")
+
+        self.write_evidence(evidence_document("p, malformed"))
+        with self.assertRaises(verifier.VerificationFailure) as policy:
+            self.validate()
+        self.assertEqual(policy.exception.category, "RBAC_POLICY_VALIDATION")
+
+        self.write_evidence(evidence_document())
+        with self.assertRaises(verifier.VerificationFailure) as probe:
+            self.verify(runner_for(permission_values={
+                verifier.PERMISSION_CHECKS[0][:3]: "no",
+            }))
+        self.assertEqual(probe.exception.category, "REQUIRED_PERMISSION_DENIED")
+        self.assertEqual(probe.exception.check_number, 1)
+
+    def test_unsafe_fragment_cannot_hide_among_safe_fragments(self):
+        unsafe = [
+            "p, role:unrelated, projects, get, *, allow",
+            "p, role:unrelated, projects, get, default, allow",
+            "p, role:unrelated, clusters, get, *, allow",
+            "p, role:unrelated, applications, get, default/other, allow",
+            "p, *, applications, get, default/monikey-inspection-access, allow",
+            "p, role:unrelated, applications, get, */*, allow",
+            "p, role:unrelated, applications, sync, default/other, allow",
+            "p, role:unrelated, applications, update/spec/replicas, *, allow",
+            "p, role:unrelated, applications, delete/*, *, allow",
+            "p, role:unrelated, applications, action/apps/Deployment/restart, *, allow",
+            "p, role:unrelated, *, *, *, allow",
+            "p, role:unrelated, app*, get, default/monikey-inspection-access, allow",
+            "g, role:fixture, role:admin",
+            "g, role:fixture, role:readonly",
+        ]
+        for policy in unsafe:
+            self.write_evidence(evidence_document(extra_data={"policy.a.csv": "g, user, role:fixture", "policy.z.csv": policy}))
+            with self.subTest(policy="withheld"), self.assertRaises(verifier.VerificationFailure) as caught:
+                self.validate()
+            self.assertEqual(caught.exception.category, "RBAC_POLICY_UNSAFE")
+
+    def test_unsafe_read_grants_are_rejected_in_every_composed_fragment(self):
+        unsafe = (
+            "p, role:unrelated, projects, get, *, allow",
+            "p, role:unrelated, clusters, get, *, allow",
+            "p, role:unrelated, applicationsets, get, */*, allow",
+            "p, role:unrelated, applications, get, default/other, allow",
+        )
+        for key in ("policy.csv", "policy..csv", "policy.extra.csv"):
+            for policy in unsafe:
+                data = {key: policy}
+                with self.subTest(key=key, policy="withheld"):
+                    with self.assertRaises(verifier.VerificationFailure) as caught:
+                        verifier.validate_composed_policy(data)
+                    self.assertEqual(caught.exception.category, "RBAC_POLICY_UNSAFE")
+
+    def test_only_exact_expected_identity_application_read_is_allowed(self):
+        valid = (
+            "p, proj:default:monikey-inspection-reader, applications, get, "
+            "default/monikey-inspection-access, allow"
+        )
+        verifier.validate_composed_policy({"policy.csv": valid})
+        with self.assertRaises(verifier.VerificationFailure) as wildcard_subject:
+            verifier.validate_composed_policy({
+                "policy.csv": "p, *, applications, get, "
+                               "default/monikey-inspection-access, allow"
+            })
+        self.assertEqual(wildcard_subject.exception.category, "RBAC_POLICY_UNSAFE")
+
+    def test_group_mapping_cannot_inherit_authorized_identity_permissions(self):
+        policy = (
+            "p, proj:default:monikey-inspection-reader, applications, get, "
+            "default/monikey-inspection-access, allow\n"
+            "g, fixture-user, proj:default:monikey-inspection-reader"
+        )
+        with self.assertRaises(verifier.VerificationFailure) as caught:
+            verifier.validate_composed_policy({"policy.csv": policy})
+        self.assertEqual(caught.exception.category, "RBAC_POLICY_UNSAFE")
+
+    def test_malformed_or_ambiguous_fragment_records_are_rejected(self):
+        for policy in ("p, broken", 'p, "unterminated', "g, user, role:reader, domain",
+                       "g, first, second\ng, second, first", "g, *, role:reader",
+                       "p, role:reader, applications, get, *, unknown"):
+            self.write_evidence(evidence_document(extra_data={"policy.bad.csv": policy}))
+            with self.subTest(policy="withheld"), self.assertRaises(verifier.VerificationFailure) as caught:
+                self.validate()
+            self.assertEqual(caught.exception.category, "RBAC_POLICY_VALIDATION")
 
 
 if __name__ == "__main__":
