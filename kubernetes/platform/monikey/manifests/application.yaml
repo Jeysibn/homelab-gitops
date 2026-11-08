@@ -31,7 +31,7 @@ spec:
     spec:
       containers:
         - name: api
-          image: ghcr.io/jeysibn/monikey-v2-api:sha-c639999963dda7ebfb8affe0b32c897f87ac10d9
+          image: ghcr.io/jeysibn/monikey-v2-api:sha-44b72473fd8407c70d85dd9aefdd12e2c0ffd5ee
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
@@ -106,7 +106,7 @@ spec:
     spec:
       containers:
         - name: frontend
-          image: ghcr.io/jeysibn/monikey-v2-frontend:sha-c639999963dda7ebfb8affe0b32c897f87ac10d9
+          image: ghcr.io/jeysibn/monikey-v2-frontend:sha-44b72473fd8407c70d85dd9aefdd12e2c0ffd5ee
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
