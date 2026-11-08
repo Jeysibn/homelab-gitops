@@ -62,6 +62,8 @@ def close_gates(root: Path, sha: str) -> None:
     app = (root / APP_PATH).read_text()
     migration_path = root / MIGRATION_PATH
     migration = migration_path.read_text()
+    if '  MONIKEY_MIGRATION_APPLY: "true"' not in migration:
+        raise ValueError("Refusing to close gates: migration apply gate is not enabled")
     expected = f"sha-{sha}"
     app_shas = IMAGE_SHA_RE.findall(app)
     runner_shas = IMAGE_SHA_RE.findall(migration)
